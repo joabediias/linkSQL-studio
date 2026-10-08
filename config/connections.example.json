@@ -1,0 +1,20 @@
+{
+  "connections": [
+    {
+      "name": "SRV_ARRAIAL",
+      "host": "192.168.6.25",
+      "port": 4407,
+      "database": "sysweb_calpan_lj7",
+      "user": "consulta",
+      "passwordEnv": "SQLBRIDGE_MYSQL_PASSWORD"
+    },
+    {
+      "name": "SRV_MATRIZ",
+      "host": "192.168.0.20",
+      "port": 4407,
+      "database": "sysweb_calpan_mt",
+      "user": "consulta",
+      "passwordEnv": "SQLBRIDGE_MYSQL_PASSWORD"
+    }
+  ]
+}

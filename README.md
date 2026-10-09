@@ -1,41 +1,27 @@
-# SantySQL Studio 0.3
+# SantySQL Studio 0.4 (Java 17)
 
-Protótipo Java 17 + Apache Calcite, para consultas federadas MySQL.
+Aplicativo experimental de consultas federadas MySQL usando Apache Calcite. Mantém limite de 1.000 linhas exibidas; CSV exporta somente as linhas carregadas.
 
-## Iniciar no Windows
-
-Abra o PowerShell na pasta que contém `pom.xml`:
+## Executar no PowerShell
 
 ```powershell
-$env:SQLBRIDGE_MYSQL_PASSWORD = Read-Host "Senha MySQL"
+cd C:\caminho\santySQL-studio
+$env:SQLBRIDGE_MYSQL_PASSWORD = Read-Host "Senha do MySQL"
 mvn clean compile exec:java
 ```
 
-Clique em **Carregar conexões** e selecione `config/connections.example.json` (edite-o conforme seu ambiente). As senhas **não** são salvas no JSON: `passwordEnv` contém o nome da variável de ambiente.
+O arquivo `config/connections.example.json` contém as conexões. `passwordEnv` deve conter o **nome da variável de ambiente**, nunca a senha.
 
-## Recursos 0.3
+## Novidades 0.4
 
-- Navegador de conexões e tabelas à esquerda. Expanda uma conexão para carregar tabelas; dê dois cliques em uma tabela para inserir um SELECT no editor.
-- Gerenciador básico de conexões (adicionar, editar e excluir no JSON). Após salvar, recarregue as conexões.
-- Editor com várias abas e Ctrl+Enter; executa a seleção de texto quando houver.
-- Grade de resultados com rolagem horizontal, colunas redimensionáveis e ordenação local.
-- Exportação CSV com separador `;`, UTF-8 BOM e apenas as linhas atualmente carregadas (máximo 1.000).
-- Consultas federadas `UNION ALL` e consultas simples via Apache Calcite.
+- Ctrl+Enter ou botão Executar: executa o SQL selecionado; sem seleção, executa somente o comando em que está o cursor, delimitado por `;` fora de strings e comentários.
+- Duplo clique em uma tabela: insere `SELECT * ... FETCH NEXT 100 ROWS ONLY;` no cursor.
+- Expanda uma tabela para carregar colunas e tipos MySQL sob demanda.
+- Clique direito em tabela para consultar 100 linhas ou copiar nome qualificado.
+- Título corrigido para evitar caractere de travessão exibido incorretamente.
 
-Exemplo:
+## Observações
 
-```sql
-SELECT 'ARRAIAL' AS ORIGEM, cu.* FROM SRV_ARRAIAL.cad_usu0 cu
-UNION ALL
-SELECT 'MATRIZ' AS ORIGEM, cu.* FROM SRV_MATRIZ.cad_usu0 cu;
-```
-
-## Limitações importantes
-
-- Apenas SELECT; uma instrução por execução. A execução de JOIN entre servidores e grandes volumes exige testes de desempenho e memória.
-- O limite de 1.000 linhas é de visualização, **não** garante que o banco ou Calcite deixem de processar mais linhas.
-- Exportação CSV exporta somente a grade atual; não exporta milhões de registros em streaming.
-- A opção de gerenciar conexões não testa o acesso antes de salvar. A conexão é validada ao carregar tabelas ou executar consultas.
-- O protótipo não fornece servidor de protocolo PostgreSQL para conexão do SantySQL 5.3.7.
-- `useSSL=false` foi mantido para compatibilidade com o ambiente de teste; revisar TLS antes de produção.
-- Evite compartilhar o JSON com dados internos dos servidores sem necessidade.
+- Consultas de escrita/DDL, procedimentos SQL com delimitadores personalizados e scripts com múltiplas instruções não são suportados pelo executor de leitura Calcite.
+- Consultas federadas pesadas podem consumir memória; valide `JOIN` com filtros e pequenas tabelas.
+- Requer rede e permissões MySQL para cada servidor configurado.

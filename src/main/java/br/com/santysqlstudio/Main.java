@@ -123,7 +123,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 1.1");
+    frame = new JFrame("SantySQL Studio - 1.2.2");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -176,14 +176,26 @@ public class Main {
     menuBar.add(fileMenu);
 
     JMenu sqlMenu = new JMenu("SQL");
+    JMenuItem renameTab = new JMenuItem("Renomear aba SQL...");
+    renameTab.addActionListener(e -> renameActiveTab());
+    fileMenu.add(renameTab);
     addMenuAction(sqlMenu, "Executar SQL (Ctrl+Enter)", execute);
     addMenuAction(sqlMenu, "Cancelar consulta", cancelQueryButton);
     addMenuAction(sqlMenu, "Formatar SQL (Ctrl+Shift+F)", formatSql);
     addMenuAction(sqlMenu, "Historico SQL", history);
+    JMenuItem findItem = new JMenuItem("Localizar no editor (Ctrl+F)");
+    findItem.addActionListener(e -> showFindReplace(false));
+    sqlMenu.add(findItem);
+    JMenuItem replaceItem = new JMenuItem("Localizar e substituir (Ctrl+H)");
+    replaceItem.addActionListener(e -> showFindReplace(true));
+    sqlMenu.add(replaceItem);
     menuBar.add(sqlMenu);
 
     JMenu resultMenu = new JMenu("Resultados");
     addMenuAction(resultMenu, "Exportar CSV...", export);
+    JMenuItem copyHeader = new JMenuItem("Copiar selecao com cabecalho (Ctrl+Shift+C)");
+    copyHeader.addActionListener(e -> { if (results != null) copySelectedResults(results, true); });
+    resultMenu.add(copyHeader);
     addMenuAction(resultMenu, "Limpar grade selecionada", clear);
     menuBar.add(resultMenu);
 
@@ -348,6 +360,10 @@ public class Main {
     area.getActionMap().put("saveSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { saveSqlFile(false); } });
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_F, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK), "formatSql");
     area.getActionMap().put("formatSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { formatActiveSql(); } });
+    area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_F, InputEvent.CTRL_DOWN_MASK), "findSql");
+    area.getActionMap().put("findSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { showFindReplace(false); } });
+    area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_H, InputEvent.CTRL_DOWN_MASK), "replaceSql");
+    area.getActionMap().put("replaceSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { showFindReplace(true); } });
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_O, InputEvent.CTRL_DOWN_MASK), "openSql");
     area.getActionMap().put("openSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { openSqlFile(); } });
     area.getActionMap().put("runSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { runQuery(); } });
@@ -364,6 +380,78 @@ public class Main {
     });
     tabs.setSelectedIndex(tabs.getTabCount() - 1);
     scheduleSessionSave();
+  }
+
+  private static void renameActiveTab() {
+    int index = tabs.getSelectedIndex();
+    if (index < 0) return;
+    Component tab = tabs.getComponentAt(index);
+    if (OPEN_FILES.containsKey(tab)) {
+      JOptionPane.showMessageDialog(frame, "Esta aba esta associada a um arquivo SQL. O nome segue o arquivo.");
+      return;
+    }
+    String old = tabs.getTitleAt(index).replaceFirst("^\\* ", "");
+    String name = JOptionPane.showInputDialog(frame, "Novo nome da aba SQL:", old);
+    if (name == null || name.isBlank()) return;
+    tabs.setTitleAt(index, name.trim());
+    updateDirtyTitle(tab);
+    scheduleSessionSave();
+  }
+
+  private static void showFindReplace(boolean replaceMode) {
+    RSyntaxTextArea editor = (RSyntaxTextArea) activeEditor();
+    JTextField find = new JTextField(24);
+    String selected = editor.getSelectedText();
+    if (selected != null && !selected.contains("\n")) find.setText(selected);
+    JTextField replacement = new JTextField(24);
+    JCheckBox caseSensitive = new JCheckBox("Diferenciar maiusculas/minusculas");
+    JPanel panel = new JPanel(new GridLayout(replaceMode ? 3 : 2, 2, 6, 6));
+    panel.add(new JLabel("Localizar:")); panel.add(find);
+    if (replaceMode) { panel.add(new JLabel("Substituir por:")); panel.add(replacement); }
+    panel.add(caseSensitive); panel.add(new JLabel(""));
+    String[] actions = replaceMode
+        ? new String[]{"Proximo", "Substituir", "Substituir todos", "Fechar"}
+        : new String[]{"Proximo", "Fechar"};
+    while (true) {
+      int action = JOptionPane.showOptionDialog(frame, panel,
+          replaceMode ? "Localizar e substituir SQL" : "Localizar SQL",
+          JOptionPane.DEFAULT_OPTION, JOptionPane.PLAIN_MESSAGE, null, actions, actions[0]);
+      if (action < 0 || action == actions.length - 1) break;
+      String needle = find.getText();
+      if (needle.isEmpty()) { status.setText(" Informe o texto a localizar."); continue; }
+      if (replaceMode && action == 2) {
+        String original = editor.getText();
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(needle),
+            caseSensitive.isSelected() ? 0 : java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.UNICODE_CASE);
+        java.util.regex.Matcher matcher = pattern.matcher(original);
+        int count = 0;
+        while (matcher.find()) count++;
+        if (count > 0) {
+          editor.setText(matcher.replaceAll(java.util.regex.Matcher.quoteReplacement(replacement.getText())));
+          status.setText(" Substituidas " + count + " ocorrencia(s).");
+        } else status.setText(" Texto nao encontrado.");
+        continue;
+      }
+      if (replaceMode && action == 1 && editor.getSelectedText() != null &&
+          (caseSensitive.isSelected() ? editor.getSelectedText().equals(needle)
+              : editor.getSelectedText().equalsIgnoreCase(needle))) {
+        int pos = editor.getSelectionStart();
+        editor.replaceSelection(replacement.getText());
+        editor.setCaretPosition(Math.min(editor.getDocument().getLength(), pos + replacement.getText().length()));
+      }
+      String haystack = editor.getText();
+      int from = Math.min(editor.getSelectionEnd(), haystack.length());
+      String searchIn = caseSensitive.isSelected() ? haystack : haystack.toLowerCase(Locale.ROOT);
+      String searchFor = caseSensitive.isSelected() ? needle : needle.toLowerCase(Locale.ROOT);
+      int found = searchIn.indexOf(searchFor, from);
+      if (found < 0) found = searchIn.indexOf(searchFor);
+      if (found >= 0) {
+        editor.select(found, found + needle.length());
+        editor.getCaret().setSelectionVisible(true);
+        status.setText(" Encontrado na posicao " + (found + 1) + ".");
+      } else status.setText(" Texto nao encontrado.");
+    }
+    editor.requestFocusInWindow();
   }
 
   private static void openSqlFile() {
@@ -1043,6 +1131,11 @@ public class Main {
     table.setRowSorter(new TableRowSorter<>(model));
     table.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(
         KeyStroke.getKeyStroke(KeyEvent.VK_C, InputEvent.CTRL_DOWN_MASK), "copyResultCells");
+    table.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(
+        KeyStroke.getKeyStroke(KeyEvent.VK_C, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK), "copyResultHeader");
+    table.getActionMap().put("copyResultHeader", new AbstractAction() {
+      public void actionPerformed(ActionEvent e) { copySelectedResults(table, true); }
+    });
     table.getActionMap().put("copyResultCells", new AbstractAction() {
       public void actionPerformed(ActionEvent e) { copySelectedResults(table); }
     });
@@ -1050,11 +1143,16 @@ public class Main {
     JMenuItem copyItem = new JMenuItem("Copiar selecao (Ctrl+C)");
     copyItem.addActionListener(e -> copySelectedResults(table));
     copyMenu.add(copyItem);
+    JMenuItem copyWithHeader = new JMenuItem("Copiar com cabecalho (Ctrl+Shift+C)");
+    copyWithHeader.addActionListener(e -> copySelectedResults(table, true));
+    copyMenu.add(copyWithHeader);
     table.setComponentPopupMenu(copyMenu);
     return table;
   }
 
-  private static void copySelectedResults(JTable table) {
+  private static void copySelectedResults(JTable table) { copySelectedResults(table, false); }
+
+  private static void copySelectedResults(JTable table, boolean includeHeader) {
     int[] rows = table.getSelectedRows();
     int[] cols = table.getSelectedColumns();
     if (rows.length == 0 || cols.length == 0) {
@@ -1062,6 +1160,13 @@ public class Main {
       return;
     }
     StringBuilder text = new StringBuilder();
+    if (includeHeader) {
+      for (int c = 0; c < cols.length; c++) {
+        if (c > 0) text.append('\t');
+        text.append(table.getColumnName(cols[c]));
+      }
+      text.append('\n');
+    }
     for (int r = 0; r < rows.length; r++) {
       if (r > 0) text.append('\n');
       for (int c = 0; c < cols.length; c++) {
@@ -1337,32 +1442,60 @@ public class Main {
   }
 
   private static void exportCsv() {
-    JTable selectedResults = results;
-    if (selectedResults == null || selectedResults.getColumnCount() == 0) { status.setText(" Execute uma consulta antes de exportar."); return; }
+    JTable table = results;
+    if (table == null || table.getColumnCount() == 0) {
+      status.setText(" Execute uma consulta antes de exportar.");
+      return;
+    }
+    JComboBox<String> separators = new JComboBox<>(new String[]{"Ponto e virgula (;) ", "Virgula (,) ", "Pipeline (|)"});
+    JComboBox<String> encodings = new JComboBox<>(new String[]{"UTF-8", "ISO-8859-1"});
+    JCheckBox header = new JCheckBox("Incluir cabecalho", true);
+    JCheckBox includeQuote = new JCheckBox("Incluir quote", true);
+    JPanel options = new JPanel(new GridLayout(4, 2, 8, 8));
+    options.add(new JLabel("Separador:")); options.add(separators);
+    options.add(new JLabel("Codificacao:")); options.add(encodings);
+    options.add(header); options.add(new JLabel());
+    options.add(includeQuote); options.add(new JLabel());
+    if (JOptionPane.showConfirmDialog(frame, options, "Opcoes de exportacao CSV",
+        JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) return;
+    char separator = separators.getSelectedIndex() == 1 ? ',' : separators.getSelectedIndex() == 2 ? '|' : ';';
+    int quoteMode = includeQuote.isSelected() ? 0 : 1;
+    java.nio.charset.Charset charset = encodings.getSelectedIndex() == 1
+        ? java.nio.charset.StandardCharsets.ISO_8859_1 : StandardCharsets.UTF_8;
     JFileChooser chooser = new JFileChooser();
     chooser.setSelectedFile(new File("resultado.csv"));
     if (chooser.showSaveDialog(frame) != JFileChooser.APPROVE_OPTION) return;
     Path path = chooser.getSelectedFile().toPath();
-    try (BufferedWriter out = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
-      out.write('\uFEFF');
-      for (int c = 0; c < selectedResults.getColumnCount(); c++) {
-        if (c > 0) out.write(';');
-        out.write(csv(selectedResults.getColumnName(c)));
-      }
-      out.newLine();
-      for (int r = 0; r < selectedResults.getRowCount(); r++) {
-        for (int c = 0; c < selectedResults.getColumnCount(); c++) {
-          if (c > 0) out.write(';');
-          Object value = selectedResults.getValueAt(r, c);
-          out.write(csv(value == null ? "" : value.toString()));
+    if (!path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".csv"))
+      path = path.resolveSibling(path.getFileName() + ".csv");
+    if (Files.exists(path) && JOptionPane.showConfirmDialog(frame,
+        "Sobrescrever " + path.getFileName() + "?", "Confirmar",
+        JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
+    try (BufferedWriter out = Files.newBufferedWriter(path, charset)) {
+      if (header.isSelected()) {
+        for (int c = 0; c < table.getColumnCount(); c++) {
+          if (c > 0) out.write(separator);
+          out.write(csv(table.getColumnName(c), separator, quoteMode));
         }
         out.newLine();
       }
-      status.setText(" CSV exportado: " + path + " (" + selectedResults.getRowCount() + " linhas exibidas).");
+      for (int r = 0; r < table.getRowCount(); r++) {
+        for (int c = 0; c < table.getColumnCount(); c++) {
+          if (c > 0) out.write(separator);
+          Object value = table.getValueAt(r, c);
+          out.write(csv(value == null ? "" : value.toString(), separator, quoteMode));
+        }
+        out.newLine();
+      }
+      status.setText(" CSV exportado: " + path + " (" + table.getRowCount() + " linhas exibidas).");
     } catch (Exception ex) { showError(ex); }
   }
 
-  private static String csv(String value) {
+  private static String csv(String value, char separator, int quoteMode) {
+    if (quoteMode == 2) return value;
+    boolean required = value.indexOf(separator) >= 0 || value.indexOf('"') >= 0
+        || value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0;
+    if (quoteMode == 1 && !required) return value;
     return "\"" + value.replace("\"", "\"\"") + "\"";
   }
 

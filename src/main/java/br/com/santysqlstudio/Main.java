@@ -65,6 +65,10 @@ public class Main {
   private static final Map<Component, String> SAVED_TEXT = new IdentityHashMap<>();
   private static final Path HISTORY_FILE = Paths.get(System.getProperty("user.home"), ".santysql-studio", "sql-history.txt");
   private static final int HISTORY_LIMIT = 100;
+  private static final Path SESSION_FILE = Paths.get(System.getProperty("user.home"), ".santysql-studio", "sql-session.json");
+  private static boolean restoringSession = false;
+  private static boolean shuttingDown = false;
+  private static javax.swing.Timer sessionTimer;
   private static int nextTabNumber = 1;
   // Cache de metadados: consultas JDBC executadas fora da thread da interface.
   private static final Map<String, List<String>> TABLE_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
@@ -119,13 +123,15 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 1.0.1");
+    frame = new JFrame("SantySQL Studio - 1.1");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
         if (tabs != null) {
+          saveSession();
+          shuttingDown = true;
           for (int i = tabs.getTabCount() - 1; i >= 0; i--) {
-            if (!closeSqlTab(i, false)) return;
+            if (!closeSqlTab(i, false)) { shuttingDown = false; return; }
           }
         }
         closeResources();
@@ -248,7 +254,13 @@ public class Main {
     searchColumns.addActionListener(e -> searchColumnsAcrossTables());
 
     tabs = new JTabbedPane();
-    addSqlTab();
+    restoringSession = true;
+    restoreSession();
+    if (tabs.getTabCount() == 0) addSqlTab();
+    restoringSession = false;
+    sessionTimer = new javax.swing.Timer(1500, e -> saveSession());
+    sessionTimer.setRepeats(false);
+    tabs.addChangeListener(e -> scheduleSessionSave());
     resultTabs = new JTabbedPane();
     resultTabs.addChangeListener(e -> selectResultTab());
     JPanel resultPanel = new JPanel(new BorderLayout());
@@ -346,11 +358,12 @@ public class Main {
     tabs.addTab(title, scroll);
     SAVED_TEXT.put(scroll, area.getText());
     area.getDocument().addDocumentListener(new DocumentListener() {
-      public void insertUpdate(DocumentEvent e) { updateDirtyTitle(scroll); }
-      public void removeUpdate(DocumentEvent e) { updateDirtyTitle(scroll); }
-      public void changedUpdate(DocumentEvent e) { updateDirtyTitle(scroll); }
+      public void insertUpdate(DocumentEvent e) { updateDirtyTitle(scroll); scheduleSessionSave(); }
+      public void removeUpdate(DocumentEvent e) { updateDirtyTitle(scroll); scheduleSessionSave(); }
+      public void changedUpdate(DocumentEvent e) { updateDirtyTitle(scroll); scheduleSessionSave(); }
     });
     tabs.setSelectedIndex(tabs.getTabCount() - 1);
+    scheduleSessionSave();
   }
 
   private static void openSqlFile() {
@@ -388,6 +401,7 @@ public class Main {
       SAVED_TEXT.put(tab, activeEditor().getText());
       tabs.setTitleAt(tabs.getSelectedIndex(), file.getFileName().toString());
       status.setText(" Script salvo: " + file);
+      scheduleSessionSave();
       return true;
     } catch (IOException ex) { showError(ex); return false; }
   }
@@ -423,7 +437,66 @@ public class Main {
     SAVED_TEXT.remove(tab);
     tabs.removeTabAt(index);
     if (ensureOneTab && tabs.getTabCount() == 0 && frame.isDisplayable()) addSqlTab();
+    scheduleSessionSave();
     return true;
+  }
+
+  private static void scheduleSessionSave() {
+    if (!restoringSession && !shuttingDown && sessionTimer != null) sessionTimer.restart();
+  }
+
+  private static void saveSession() {
+    if (restoringSession || shuttingDown || tabs == null) return;
+    try {
+      ObjectNode session = JSON.createObjectNode();
+      ArrayNode openTabs = session.putArray("tabs");
+      for (int i = 0; i < tabs.getTabCount(); i++) {
+        Component tab = tabs.getComponentAt(i);
+        ObjectNode item = openTabs.addObject();
+        item.put("title", tabs.getTitleAt(i).replaceFirst("^\\* ", ""));
+        item.put("sql", editorOf(tab).getText());
+        Path file = OPEN_FILES.get(tab);
+        if (file != null) item.put("file", file.toString());
+        item.put("savedText", SAVED_TEXT.getOrDefault(tab, ""));
+      }
+      session.put("selected", tabs.getSelectedIndex());
+      Files.createDirectories(SESSION_FILE.getParent());
+      Path temporary = SESSION_FILE.resolveSibling("sql-session.tmp");
+      JSON.writerWithDefaultPrettyPrinter().writeValue(temporary.toFile(), session);
+      try {
+        Files.move(temporary, SESSION_FILE, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      } catch (java.nio.file.AtomicMoveNotSupportedException ex) {
+        Files.move(temporary, SESSION_FILE, StandardCopyOption.REPLACE_EXISTING);
+      }
+    } catch (Exception ex) {
+      if (status != null) status.setText(" Aviso: nao foi possivel salvar a sessao SQL: " + ex.getMessage());
+    }
+  }
+
+  private static void restoreSession() {
+    if (!Files.isRegularFile(SESSION_FILE)) return;
+    try {
+      JsonNode session = JSON.readTree(SESSION_FILE.toFile());
+      JsonNode entries = session.path("tabs");
+      if (!entries.isArray()) return;
+      for (JsonNode entry : entries) {
+        addSqlTab();
+        Component tab = tabs.getSelectedComponent();
+        editorOf(tab).setText(entry.path("sql").asText(""));
+        String title = entry.path("title").asText("SQL " + nextTabNumber);
+        tabs.setTitleAt(tabs.getSelectedIndex(), title);
+        if (entry.hasNonNull("file")) {
+          OPEN_FILES.put(tab, Paths.get(entry.get("file").asText()));
+        }
+        SAVED_TEXT.put(tab, entry.path("savedText").asText(""));
+        updateDirtyTitle(tab);
+      }
+      int selected = session.path("selected").asInt(0);
+      if (tabs.getTabCount() > 0) tabs.setSelectedIndex(Math.max(0, Math.min(selected, tabs.getTabCount() - 1)));
+    } catch (Exception ex) {
+      JOptionPane.showMessageDialog(frame, "Nao foi possivel restaurar a sessao SQL: " + ex.getMessage(),
+          "Restaurar sessao", JOptionPane.WARNING_MESSAGE);
+    }
   }
 
   private static List<String> readHistory() {
@@ -968,7 +1041,38 @@ public class Main {
     table.getTableHeader().setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
     table.getTableHeader().setReorderingAllowed(true);
     table.setRowSorter(new TableRowSorter<>(model));
+    table.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(
+        KeyStroke.getKeyStroke(KeyEvent.VK_C, InputEvent.CTRL_DOWN_MASK), "copyResultCells");
+    table.getActionMap().put("copyResultCells", new AbstractAction() {
+      public void actionPerformed(ActionEvent e) { copySelectedResults(table); }
+    });
+    JPopupMenu copyMenu = new JPopupMenu();
+    JMenuItem copyItem = new JMenuItem("Copiar selecao (Ctrl+C)");
+    copyItem.addActionListener(e -> copySelectedResults(table));
+    copyMenu.add(copyItem);
+    table.setComponentPopupMenu(copyMenu);
     return table;
+  }
+
+  private static void copySelectedResults(JTable table) {
+    int[] rows = table.getSelectedRows();
+    int[] cols = table.getSelectedColumns();
+    if (rows.length == 0 || cols.length == 0) {
+      status.setText(" Selecione as celulas ou linhas que deseja copiar.");
+      return;
+    }
+    StringBuilder text = new StringBuilder();
+    for (int r = 0; r < rows.length; r++) {
+      if (r > 0) text.append('\n');
+      for (int c = 0; c < cols.length; c++) {
+        if (c > 0) text.append('\t');
+        Object value = table.getValueAt(rows[r], cols[c]);
+        if (value != null) text.append(value.toString().replace('\t', ' ').replace('\n', ' '));
+      }
+    }
+    Toolkit.getDefaultToolkit().getSystemClipboard().setContents(
+        new java.awt.datatransfer.StringSelection(text.toString()), null);
+    status.setText(" Copiados " + rows.length + " linha(s) e " + cols.length + " coluna(s).");
   }
 
   private static void applyResultFilter() {

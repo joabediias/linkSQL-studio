@@ -50,6 +50,9 @@ public class Main {
   private static DefaultMutableTreeNode rootNode;
   private static JButton execute;
   private static SwingWorker<DefaultTableModel, Void> currentQuery;
+  private static final Map<Component, Path> OPEN_FILES = new IdentityHashMap<>();
+  private static JTextField tableSearch;
+  private static final String[] SQL_WORDS = {"SELECT", "FROM", "WHERE", "JOIN", "LEFT JOIN", "RIGHT JOIN", "INNER JOIN", "ON", "GROUP BY", "ORDER BY", "HAVING", "LIMIT", "UNION ALL", "DISTINCT", "AS", "AND", "OR", "NOT", "IS NULL", "IN", "EXISTS", "WITH", "CASE", "WHEN", "THEN", "ELSE", "END", "COUNT", "SUM", "AVG", "MIN", "MAX", "FETCH NEXT", "ROWS ONLY"};
 
   public static void main(String[] args) {
     try { applyLookAndFeel(); } catch (Exception ex) { ex.printStackTrace(); }
@@ -96,7 +99,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 0.5");
+    frame = new JFrame("SantySQL Studio - 0.6");
     frame.setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
     frame.setSize(1360, 840);
     frame.setMinimumSize(new Dimension(900, 600));
@@ -105,6 +108,8 @@ public class Main {
     JButton load = new JButton("Carregar conexões");
     JButton manage = new JButton("Gerenciar conexões");
     JButton newTab = new JButton("Nova aba SQL");
+    JButton openSql = new JButton("Abrir SQL");
+    JButton saveSql = new JButton("Salvar SQL");
     execute = new JButton("Executar SQL  (Ctrl+Enter)");
     JButton clear = new JButton("Limpar grade");
     JButton export = new JButton("Exportar CSV");
@@ -114,7 +119,7 @@ public class Main {
     execute.putClientProperty("JButton.buttonType", "roundRect");
     execute.setBackground(new Color(40, 116, 218));
     execute.setForeground(Color.WHITE);
-    for (JButton b : new JButton[]{load, manage, newTab, execute, clear, export, themeButton}) toolbar.add(b);
+    for (JButton b : new JButton[]{load, manage, newTab, openSql, saveSql, execute, clear, export, themeButton}) toolbar.add(b);
 
     rootNode = new DefaultMutableTreeNode("Conexões MySQL");
     explorer = new JTree(rootNode);
@@ -189,7 +194,14 @@ public class Main {
     resultPanel.add(new JScrollPane(results), BorderLayout.CENTER);
     JSplitPane vertical = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tabs, resultPanel);
     vertical.setResizeWeight(.48);
-    JSplitPane horizontal = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, new JScrollPane(explorer), vertical);
+    JPanel explorerPanel = new JPanel(new BorderLayout(0, 4));
+    tableSearch = new JTextField();
+    tableSearch.putClientProperty("JTextField.placeholderText", "Buscar tabela (Enter)...");
+    tableSearch.setToolTipText("Busca entre as tabelas dos servidores já expandidos; Enter encontra a próxima.");
+    tableSearch.addActionListener(e -> findTable());
+    explorerPanel.add(tableSearch, BorderLayout.NORTH);
+    explorerPanel.add(new JScrollPane(explorer), BorderLayout.CENTER);
+    JSplitPane horizontal = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, explorerPanel, vertical);
     horizontal.setResizeWeight(.19);
     horizontal.setDividerLocation(275);
     status = new JLabel(" Carregue as conexões para iniciar. | Limite de visualização: " + ROW_LIMIT + " linhas");
@@ -207,6 +219,8 @@ public class Main {
     load.addActionListener(e -> chooseAndLoad());
     manage.addActionListener(e -> manageConnections());
     newTab.addActionListener(e -> addSqlTab());
+    openSql.addActionListener(e -> openSqlFile());
+    saveSql.addActionListener(e -> saveSqlFile(false));
     execute.addActionListener(e -> runQuery());
     clear.addActionListener(e -> results.setModel(new DefaultTableModel()));
     export.addActionListener(e -> exportCsv());
@@ -227,6 +241,12 @@ public class Main {
     area.setTabSize(2);
     if (tabs.getTabCount() == 0) area.setText("SELECT *\nFROM SRV_ARRAIAL.cad_usu0\nFETCH NEXT 100 ROWS ONLY;");
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.CTRL_DOWN_MASK), "runSql");
+    area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_SPACE, InputEvent.CTRL_DOWN_MASK), "sqlComplete");
+    area.getActionMap().put("sqlComplete", new AbstractAction() { public void actionPerformed(ActionEvent e) { showCompletions(area); } });
+    area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK), "saveSql");
+    area.getActionMap().put("saveSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { saveSqlFile(false); } });
+    area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_O, InputEvent.CTRL_DOWN_MASK), "openSql");
+    area.getActionMap().put("openSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { openSqlFile(); } });
     area.getActionMap().put("runSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { runQuery(); } });
     String title = "SQL " + (tabs.getTabCount() + 1);
     RTextScrollPane scroll = new RTextScrollPane(area);
@@ -234,6 +254,107 @@ public class Main {
     scroll.setFoldIndicatorEnabled(true);
     tabs.addTab(title, scroll);
     tabs.setSelectedIndex(tabs.getTabCount() - 1);
+  }
+
+  private static void openSqlFile() {
+    JFileChooser chooser = new JFileChooser();
+    chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Scripts SQL (*.sql)", "sql"));
+    if (chooser.showOpenDialog(frame) != JFileChooser.APPROVE_OPTION) return;
+    Path file = chooser.getSelectedFile().toPath();
+    try {
+      addSqlTab();
+      activeEditor().setText(Files.readString(file, StandardCharsets.UTF_8));
+      OPEN_FILES.put(tabs.getSelectedComponent(), file);
+      tabs.setTitleAt(tabs.getSelectedIndex(), file.getFileName().toString());
+      status.setText(" Script aberto: " + file);
+    } catch (IOException ex) { showError(ex); }
+  }
+
+  private static void saveSqlFile(boolean saveAs) {
+    Component tab = tabs.getSelectedComponent();
+    if (tab == null) return;
+    Path file = saveAs ? null : OPEN_FILES.get(tab);
+    if (file == null) {
+      JFileChooser chooser = new JFileChooser();
+      chooser.setSelectedFile(new File("consulta.sql"));
+      chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Scripts SQL (*.sql)", "sql"));
+      if (chooser.showSaveDialog(frame) != JFileChooser.APPROVE_OPTION) return;
+      file = chooser.getSelectedFile().toPath();
+      if (!file.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".sql"))
+        file = file.resolveSibling(file.getFileName() + ".sql");
+      if (Files.exists(file) && JOptionPane.showConfirmDialog(frame, "Sobrescrever " + file.getFileName() + "?", "Confirmar", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
+    }
+    try {
+      Files.writeString(file, activeEditor().getText(), StandardCharsets.UTF_8);
+      OPEN_FILES.put(tab, file);
+      tabs.setTitleAt(tabs.getSelectedIndex(), file.getFileName().toString());
+      status.setText(" Script salvo: " + file);
+    } catch (IOException ex) { showError(ex); }
+  }
+
+  private static void findTable() {
+    String term = tableSearch.getText().trim().toLowerCase(Locale.ROOT);
+    if (term.isEmpty()) return;
+    List<TreePath> matches = new ArrayList<>();
+    DefaultMutableTreeNode root = (DefaultMutableTreeNode) explorer.getModel().getRoot();
+    Enumeration<?> nodes = root.depthFirstEnumeration();
+    while (nodes.hasMoreElements()) {
+      DefaultMutableTreeNode node = (DefaultMutableTreeNode) nodes.nextElement();
+      if (node.getUserObject() instanceof TableNode table && table.table.toLowerCase(Locale.ROOT).contains(term))
+        matches.add(new TreePath(node.getPath()));
+    }
+    if (matches.isEmpty()) {
+      status.setText(" Nenhuma tabela encontrada entre os servidores expandidos. Expanda um servidor para carregar suas tabelas.");
+      return;
+    }
+    TreePath selected = explorer.getSelectionPath();
+    int next = 0;
+    if (selected != null) {
+      int pos = matches.indexOf(selected);
+      if (pos >= 0) next = (pos + 1) % matches.size();
+    }
+    explorer.setSelectionPath(matches.get(next));
+    explorer.scrollPathToVisible(matches.get(next));
+    status.setText(" Busca: " + matches.size() + " tabela(s) encontrada(s). Pressione Enter para a próxima.");
+  }
+
+  private static void showCompletions(RSyntaxTextArea editor) {
+    int caret = editor.getCaretPosition();
+    String before = editor.getText().substring(0, caret);
+    int start = caret;
+    while (start > 0 && (Character.isLetterOrDigit(before.charAt(start - 1)) || before.charAt(start - 1) == '_')) start--;
+    String prefix = before.substring(start).toLowerCase(Locale.ROOT);
+    Set<String> candidates = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+    Collections.addAll(candidates, SQL_WORDS);
+    DefaultMutableTreeNode root = (DefaultMutableTreeNode) explorer.getModel().getRoot();
+    Enumeration<?> nodes = root.depthFirstEnumeration();
+    while (nodes.hasMoreElements()) {
+      Object item = ((DefaultMutableTreeNode) nodes.nextElement()).getUserObject();
+      if (item instanceof SourceNode source) candidates.add(source.name);
+      if (item instanceof TableNode table) { candidates.add(table.table); candidates.add(table.source + "." + table.table); }
+      if (item instanceof String column && column.contains("  :  ")) candidates.add(column.substring(0, column.indexOf("  :  ")));
+    }
+    JPopupMenu menu = new JPopupMenu();
+    int count = 0;
+    final int replaceStart = start;
+    for (String candidate : candidates) {
+      if (!candidate.toLowerCase(Locale.ROOT).startsWith(prefix)) continue;
+      JMenuItem option = new JMenuItem(candidate);
+      option.addActionListener(e -> {
+        try {
+          editor.getDocument().remove(replaceStart, caret - replaceStart);
+          editor.getDocument().insertString(replaceStart, candidate, null);
+          editor.requestFocusInWindow();
+        } catch (javax.swing.text.BadLocationException ex) { showError(ex); }
+      });
+      menu.add(option);
+      if (++count >= 35) break;
+    }
+    if (count == 0) { status.setText(" Nenhuma sugestão encontrada. Expanda tabelas para carregar seus nomes e colunas."); return; }
+    try {
+      Rectangle rect = editor.modelToView2D(caret).getBounds();
+      menu.show(editor, rect.x, rect.y + rect.height);
+    } catch (javax.swing.text.BadLocationException ex) { showError(ex); }
   }
 
   private static JTextArea activeEditor() {

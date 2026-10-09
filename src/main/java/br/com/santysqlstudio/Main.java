@@ -56,6 +56,8 @@ public class Main {
   private static JButton execute;
   private static JButton cancelQueryButton;
   private static JTextField resultFilter;
+  private static JComboBox<String> resultFilterColumn;
+  private static boolean changingResultTab = false;
   private static final java.util.concurrent.atomic.AtomicReference<Statement> RUNNING_STATEMENT = new java.util.concurrent.atomic.AtomicReference<>();
   private static final java.util.concurrent.atomic.AtomicReference<Connection> RUNNING_CONNECTION = new java.util.concurrent.atomic.AtomicReference<>();
   private static final java.util.concurrent.atomic.AtomicBoolean CANCEL_REQUESTED = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -123,7 +125,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 1.2.2");
+    frame = new JFrame("SantySQL Studio - 1.3");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -290,6 +292,11 @@ public class Main {
     JPanel resultHeader = new JPanel(new BorderLayout(8, 0));
     resultHeader.add(resultSummary, BorderLayout.CENTER);
     JPanel resultTools = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 3));
+    resultFilterColumn = new JComboBox<>(new String[]{"Todas as colunas"});
+    resultFilterColumn.setPrototypeDisplayValue("Todas as colunas (selecione)");
+    resultFilterColumn.addActionListener(e -> applyResultFilter());
+    resultTools.add(new JLabel("Coluna:"));
+    resultTools.add(resultFilterColumn);
     resultTools.add(new JLabel("Filtro:"));
     resultTools.add(resultFilter);
     resultHeader.add(resultTools, BorderLayout.EAST);
@@ -1128,7 +1135,28 @@ public class Main {
     table.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 13));
     table.getTableHeader().setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
     table.getTableHeader().setReorderingAllowed(true);
-    table.setRowSorter(new TableRowSorter<>(model));
+    TableRowSorter<DefaultTableModel> sorter = new TableRowSorter<>(model);
+    // Mantem ordenacao numerica para colunas com valores Number.
+    for (int c = 0; c < model.getColumnCount(); c++) {
+      final int column = c;
+      sorter.setComparator(c, (a, b) -> {
+        if (a == null) return b == null ? 0 : -1;
+        if (b == null) return 1;
+        if (a instanceof Number && b instanceof Number)
+          return new java.math.BigDecimal(a.toString()).compareTo(new java.math.BigDecimal(b.toString()));
+        return String.CASE_INSENSITIVE_ORDER.compare(a.toString(), b.toString());
+      });
+    }
+    table.setRowSorter(sorter);
+    table.addMouseListener(new MouseAdapter() {
+      public void mouseClicked(MouseEvent e) {
+        if (e.getClickCount() == 2 && SwingUtilities.isLeftMouseButton(e)) {
+          int row = table.rowAtPoint(e.getPoint());
+          int col = table.columnAtPoint(e.getPoint());
+          if (row >= 0 && col >= 0) showFullCell(table, row, col);
+        }
+      }
+    });
     table.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(
         KeyStroke.getKeyStroke(KeyEvent.VK_C, InputEvent.CTRL_DOWN_MASK), "copyResultCells");
     table.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(
@@ -1180,14 +1208,44 @@ public class Main {
     status.setText(" Copiados " + rows.length + " linha(s) e " + cols.length + " coluna(s).");
   }
 
+  private static void showFullCell(JTable table, int row, int col) {
+    Object value = table.getValueAt(row, col);
+    JTextArea content = new JTextArea(value == null ? "" : value.toString(), 16, 65);
+    content.setEditable(false);
+    content.setLineWrap(true);
+    content.setWrapStyleWord(true);
+    content.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
+    JScrollPane pane = new JScrollPane(content);
+    pane.setPreferredSize(new Dimension(720, 380));
+    JButton copy = new JButton("Copiar valor");
+    copy.addActionListener(e -> {
+      Toolkit.getDefaultToolkit().getSystemClipboard().setContents(
+          new java.awt.datatransfer.StringSelection(content.getText()), null);
+      status.setText(" Valor da celula copiado.");
+    });
+    JPanel panel = new JPanel(new BorderLayout(0, 8));
+    panel.add(pane, BorderLayout.CENTER);
+    panel.add(copy, BorderLayout.SOUTH);
+    JOptionPane.showMessageDialog(frame, panel,
+        "Conteudo completo - " + table.getColumnName(col) + " (linha " + (row + 1) + ")",
+        JOptionPane.PLAIN_MESSAGE);
+  }
+
   private static void applyResultFilter() {
-    if (results == null || resultFilter == null) return;
+    if (changingResultTab || results == null || resultFilter == null || resultFilterColumn == null) return;
     @SuppressWarnings("unchecked")
     TableRowSorter<DefaultTableModel> sorter = (TableRowSorter<DefaultTableModel>) results.getRowSorter();
     String value = resultFilter.getText().trim();
-    sorter.setRowFilter(value.isEmpty() ? null : RowFilter.regexFilter("(?iu)" + java.util.regex.Pattern.quote(value)));
+    int selectedColumn = resultFilterColumn.getSelectedIndex() - 1;
+    // JComboBox usa ordem do modelo; conversao garante compatibilidade com colunas arrastadas.
+    sorter.setRowFilter(value.isEmpty() ? null : (selectedColumn < 0
+        ? RowFilter.regexFilter("(?iu)" + java.util.regex.Pattern.quote(value))
+        : RowFilter.regexFilter("(?iu)" + java.util.regex.Pattern.quote(value), selectedColumn)));
     Component tab = resultTabs.getSelectedComponent();
-    if (tab instanceof JComponent component) component.putClientProperty("resultFilter", value);
+    if (tab instanceof JComponent component) {
+      component.putClientProperty("resultFilter", value);
+      component.putClientProperty("resultFilterColumn", resultFilterColumn.getSelectedIndex());
+    }
     status.setText(" Filtro local: " + results.getRowCount() + " de " + results.getModel().getRowCount() + " linhas exibidas.");
   }
 
@@ -1232,20 +1290,39 @@ public class Main {
   }
 
   private static void selectResultTab() {
-    Component selected = resultTabs.getSelectedComponent();
-    if (selected instanceof JScrollPane scroll && scroll.getViewport().getView() instanceof JTable table) {
-      results = table;
-      Object summary = scroll.getClientProperty("resultSummary");
-      resultSummary.setText(summary == null ? "  RESULTADOS" : summary.toString());
-      if (resultFilter != null) {
-        resultFilter.setEnabled(true);
-        resultFilter.setText(String.valueOf(scroll.getClientProperty("resultFilter") == null ? "" : scroll.getClientProperty("resultFilter")));
+    changingResultTab = true;
+    try {
+      Component selected = resultTabs.getSelectedComponent();
+      if (selected instanceof JScrollPane scroll && scroll.getViewport().getView() instanceof JTable table) {
+        results = table;
+        Object summary = scroll.getClientProperty("resultSummary");
+        resultSummary.setText(summary == null ? "  RESULTADOS" : summary.toString());
+        if (resultFilterColumn != null) {
+          resultFilterColumn.removeAllItems();
+          resultFilterColumn.addItem("Todas as colunas");
+          for (int c = 0; c < table.getModel().getColumnCount(); c++)
+            resultFilterColumn.addItem(table.getModel().getColumnName(c));
+          Object savedColumn = scroll.getClientProperty("resultFilterColumn");
+          int index = savedColumn instanceof Integer ? (Integer) savedColumn : 0;
+          resultFilterColumn.setSelectedIndex(Math.max(0, Math.min(index, resultFilterColumn.getItemCount() - 1)));
+          resultFilterColumn.setEnabled(true);
+        }
+        if (resultFilter != null) {
+          resultFilter.setEnabled(true);
+          resultFilter.setText(String.valueOf(scroll.getClientProperty("resultFilter") == null ? "" : scroll.getClientProperty("resultFilter")));
+        }
+      } else {
+        results = null;
+        if (resultFilter != null) { resultFilter.setText(""); resultFilter.setEnabled(false); }
+        if (resultFilterColumn != null) {
+          resultFilterColumn.removeAllItems();
+          resultFilterColumn.addItem("Todas as colunas");
+          resultFilterColumn.setEnabled(false);
+        }
+        resultSummary.setText("  RESULTADOS  ·  Nenhuma consulta executada");
       }
-    } else {
-      results = null;
-      if (resultFilter != null) { resultFilter.setText(""); resultFilter.setEnabled(false); }
-      resultSummary.setText("  RESULTADOS  ·  Nenhuma consulta executada");
-    }
+    } finally { changingResultTab = false; }
+    if (results != null) applyResultFilter();
   }
 
   private static void clearSelectedResult() {

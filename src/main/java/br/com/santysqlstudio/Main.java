@@ -334,26 +334,57 @@ public class Main {
       if (item instanceof TableNode table) { candidates.add(table.table); candidates.add(table.source + "." + table.table); }
       if (item instanceof String column && column.contains("  :  ")) candidates.add(column.substring(0, column.indexOf("  :  ")));
     }
-    JPopupMenu menu = new JPopupMenu();
-    int count = 0;
-    final int replaceStart = start;
+    // Lista rolavel e compacta, sem ocupar toda a altura da tela.
+    java.util.List<String> matches = new ArrayList<>();
     for (String candidate : candidates) {
-      if (!candidate.toLowerCase(Locale.ROOT).startsWith(prefix)) continue;
-      JMenuItem option = new JMenuItem(candidate);
-      option.addActionListener(e -> {
-        try {
-          editor.getDocument().remove(replaceStart, caret - replaceStart);
-          editor.getDocument().insertString(replaceStart, candidate, null);
-          editor.requestFocusInWindow();
-        } catch (javax.swing.text.BadLocationException ex) { showError(ex); }
-      });
-      menu.add(option);
-      if (++count >= 35) break;
+      if (candidate.toLowerCase(Locale.ROOT).startsWith(prefix)) matches.add(candidate);
+      if (matches.size() >= 100) break;
     }
-    if (count == 0) { status.setText(" Nenhuma sugestão encontrada. Expanda tabelas para carregar seus nomes e colunas."); return; }
+    if (matches.isEmpty()) {
+      status.setText(" Nenhuma sugestão encontrada. Expanda tabelas para carregar seus nomes e colunas.");
+      return;
+    }
+    final int replaceStart = start;
+    JList<String> suggestions = new JList<>(matches.toArray(new String[0]));
+    suggestions.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+    suggestions.setSelectedIndex(0);
+    suggestions.setVisibleRowCount(Math.min(9, matches.size()));
+    suggestions.setFixedCellHeight(25);
+    JScrollPane scroll = new JScrollPane(suggestions);
+    scroll.setBorder(BorderFactory.createEmptyBorder());
+    scroll.setPreferredSize(new Dimension(280, Math.min(9, matches.size()) * 25 + 4));
+    JPopupMenu menu = new JPopupMenu();
+    menu.setLayout(new BorderLayout());
+    menu.add(scroll, BorderLayout.CENTER);
+    Runnable accept = () -> {
+      String candidate = suggestions.getSelectedValue();
+      if (candidate == null) return;
+      try {
+        editor.getDocument().remove(replaceStart, caret - replaceStart);
+        editor.getDocument().insertString(replaceStart, candidate, null);
+        editor.setCaretPosition(replaceStart + candidate.length());
+        menu.setVisible(false);
+        SwingUtilities.invokeLater(editor::requestFocusInWindow);
+      } catch (javax.swing.text.BadLocationException ex) { showError(ex); }
+    };
+    suggestions.addMouseListener(new MouseAdapter() {
+      public void mouseClicked(MouseEvent e) { if (e.getClickCount() == 2) accept.run(); }
+    });
+    suggestions.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "acceptCompletion");
+    suggestions.getActionMap().put("acceptCompletion", new AbstractAction() {
+      public void actionPerformed(ActionEvent e) { accept.run(); }
+    });
+    suggestions.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "closeCompletion");
+    suggestions.getActionMap().put("closeCompletion", new AbstractAction() {
+      public void actionPerformed(ActionEvent e) {
+        menu.setVisible(false);
+        SwingUtilities.invokeLater(editor::requestFocusInWindow);
+      }
+    });
     try {
       Rectangle rect = editor.modelToView2D(caret).getBounds();
       menu.show(editor, rect.x, rect.y + rect.height);
+      SwingUtilities.invokeLater(suggestions::requestFocusInWindow);
     } catch (javax.swing.text.BadLocationException ex) { showError(ex); }
   }
 
@@ -503,13 +534,14 @@ public class Main {
   }
 
   private static void runQuery() {
-    if (federation == null) { status.setText(" Carregue as conexões primeiro."); return; }
-    if (currentQuery != null && !currentQuery.isDone()) return;
-    String sql = activeEditor().getSelectedText();
-    if (sql == null || sql.isBlank()) sql = statementAtCaret(activeEditor());
+    JTextArea queryEditor = activeEditor();
+    if (federation == null) { status.setText(" Carregue as conexões primeiro."); queryEditor.requestFocusInWindow(); return; }
+    if (currentQuery != null && !currentQuery.isDone()) { queryEditor.requestFocusInWindow(); return; }
+    String sql = queryEditor.getSelectedText();
+    if (sql == null || sql.isBlank()) sql = statementAtCaret(queryEditor);
     sql = sql.trim();
     while (sql.endsWith(";")) sql = sql.substring(0, sql.length() - 1).trim();
-    if (sql.isBlank()) { status.setText(" Posicione o cursor em uma consulta ou selecione o SQL."); return; }
+    if (sql.isBlank()) { status.setText(" Posicione o cursor em uma consulta ou selecione o SQL."); queryEditor.requestFocusInWindow(); return; }
     final String query = sql;
     execute.setEnabled(false);
     queryStarted = System.nanoTime();
@@ -549,6 +581,8 @@ public class Main {
       }
     };
     currentQuery.execute();
+    // Ctrl+Enter deve manter o teclado no editor, sem alterar cursor ou seleção.
+    SwingUtilities.invokeLater(queryEditor::requestFocusInWindow);
   }
 
   private static void configureColumns() {

@@ -44,9 +44,10 @@ public class Main {
   private static JButton themeButton;
   private static JPanel toolbar;
   private static JLabel resultSummary;
-  private static long queryStarted;
   private static JLabel status;
   private static JTable results;
+  private static JTabbedPane resultTabs;
+  private static int nextResultNumber = 1;
   private static JTabbedPane tabs;
   private static JTree explorer;
   private static DefaultMutableTreeNode rootNode;
@@ -111,7 +112,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 0.8");
+    frame = new JFrame("SantySQL Studio - 0.9");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -137,6 +138,7 @@ public class Main {
     JButton saveSql = new JButton("Salvar SQL");
     JButton closeTab = new JButton("Fechar aba");
     JButton history = new JButton("Histórico SQL");
+    JButton formatSql = new JButton("Formatar SQL");
     execute = new JButton("Executar SQL  (Ctrl+Enter)");
     JButton clear = new JButton("Limpar grade");
     JButton export = new JButton("Exportar CSV");
@@ -146,7 +148,7 @@ public class Main {
     execute.putClientProperty("JButton.buttonType", "roundRect");
     execute.setBackground(new Color(40, 116, 218));
     execute.setForeground(Color.WHITE);
-    for (JButton b : new JButton[]{load, manage, searchColumns, newTab, openSql, saveSql, closeTab, history, execute, clear, export, themeButton}) toolbar.add(b);
+    for (JButton b : new JButton[]{load, manage, searchColumns, newTab, openSql, saveSql, closeTab, history, formatSql, execute, clear, export, themeButton}) toolbar.add(b);
 
     rootNode = new DefaultMutableTreeNode("Conexões MySQL");
     explorer = new JTree(rootNode);
@@ -205,22 +207,14 @@ public class Main {
 
     tabs = new JTabbedPane();
     addSqlTab();
-    results = new JTable(new DefaultTableModel());
-    results.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
-    results.setAutoCreateRowSorter(true);
-    results.setRowHeight(28);
-    results.setShowHorizontalLines(true);
-    results.setShowVerticalLines(false);
-    results.setCellSelectionEnabled(true);
-    results.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 13));
-    results.getTableHeader().setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
-    results.getTableHeader().setReorderingAllowed(true);
+    resultTabs = new JTabbedPane();
+    resultTabs.addChangeListener(e -> selectResultTab());
     JPanel resultPanel = new JPanel(new BorderLayout());
     resultSummary = new JLabel("  RESULTADOS  ·  Nenhuma consulta executada");
     resultSummary.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
     resultSummary.setBorder(BorderFactory.createEmptyBorder(9, 8, 9, 8));
     resultPanel.add(resultSummary, BorderLayout.NORTH);
-    resultPanel.add(new JScrollPane(results), BorderLayout.CENTER);
+    resultPanel.add(resultTabs, BorderLayout.CENTER);
     JSplitPane vertical = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tabs, resultPanel);
     vertical.setResizeWeight(.48);
     JPanel explorerPanel = new JPanel(new BorderLayout(0, 4));
@@ -252,8 +246,9 @@ public class Main {
     saveSql.addActionListener(e -> saveSqlFile(false));
     closeTab.addActionListener(e -> closeSqlTab(tabs.getSelectedIndex()));
     history.addActionListener(e -> showHistory());
+    formatSql.addActionListener(e -> formatActiveSql());
     execute.addActionListener(e -> runQuery());
-    clear.addActionListener(e -> results.setModel(new DefaultTableModel()));
+    clear.addActionListener(e -> clearSelectedResult());
     export.addActionListener(e -> exportCsv());
     themeButton.addActionListener(e -> toggleTheme());
     frame.setVisible(true);
@@ -276,6 +271,8 @@ public class Main {
     area.getActionMap().put("sqlComplete", new AbstractAction() { public void actionPerformed(ActionEvent e) { showCompletions(area); } });
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK), "saveSql");
     area.getActionMap().put("saveSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { saveSqlFile(false); } });
+    area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_F, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK), "formatSql");
+    area.getActionMap().put("formatSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { formatActiveSql(); } });
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_O, InputEvent.CTRL_DOWN_MASK), "openSql");
     area.getActionMap().put("openSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { openSqlFile(); } });
     area.getActionMap().put("runSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { runQuery(); } });
@@ -895,6 +892,136 @@ public class Main {
     return "";
   }
 
+  // Cada execucao gera uma grade independente, preservando resultados anteriores.
+  private static JTable newResultTable(DefaultTableModel model) {
+    JTable table = new JTable(model);
+    table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+    table.setAutoCreateRowSorter(true);
+    table.setRowHeight(28);
+    table.setShowHorizontalLines(true);
+    table.setShowVerticalLines(false);
+    table.setCellSelectionEnabled(true);
+    table.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 13));
+    table.getTableHeader().setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
+    table.getTableHeader().setReorderingAllowed(true);
+    return table;
+  }
+
+  private static void selectResultTab() {
+    Component selected = resultTabs.getSelectedComponent();
+    if (selected instanceof JScrollPane scroll && scroll.getViewport().getView() instanceof JTable table) {
+      results = table;
+      Object summary = scroll.getClientProperty("resultSummary");
+      resultSummary.setText(summary == null ? "  RESULTADOS" : summary.toString());
+    } else {
+      results = null;
+      resultSummary.setText("  RESULTADOS  ·  Nenhuma consulta executada");
+    }
+  }
+
+  private static void clearSelectedResult() {
+    int index = resultTabs.getSelectedIndex();
+    if (index < 0) { status.setText(" Nenhum resultado para fechar."); return; }
+    resultTabs.removeTabAt(index);
+    selectResultTab();
+    status.setText(" Aba de resultados fechada.");
+  }
+
+  private static void addResultTab(DefaultTableModel model, double elapsed) {
+    JTable table = newResultTable(model);
+    JScrollPane scroll = new JScrollPane(table);
+    String summary = String.format(Locale.ROOT, "  RESULTADOS  ·  %,d linhas  ·  %.2f s", model.getRowCount(), elapsed);
+    scroll.putClientProperty("resultSummary", summary);
+    String title = "Resultado " + nextResultNumber++ + " (" + model.getRowCount() + ")";
+    resultTabs.addTab(title, scroll);
+    int index = resultTabs.indexOfComponent(scroll);
+    resultTabs.setTabComponentAt(index, resultTabHeader(title, scroll));
+    resultTabs.setSelectedComponent(scroll);
+    configureColumns(table);
+  }
+
+  private static Component resultTabHeader(String title, Component content) {
+    JPanel header = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 0));
+    header.setOpaque(false);
+    JLabel label = new JLabel(title);
+    JButton close = new JButton("×");
+    close.setToolTipText("Fechar este resultado");
+    close.setMargin(new Insets(0, 4, 0, 4));
+    close.setFocusable(false);
+    close.addActionListener(e -> {
+      int index = resultTabs.indexOfComponent(content);
+      if (index >= 0) resultTabs.removeTabAt(index);
+      selectResultTab();
+    });
+    header.add(label);
+    header.add(close);
+    return header;
+  }
+
+  // Formatacao conservadora: apenas separa clausulas no nivel externo.
+  // Literais, identificadores entre aspas e comentarios nao sao alterados.
+  private static void formatActiveSql() {
+    RSyntaxTextArea editor = (RSyntaxTextArea) activeEditor();
+    String original = editor.getText();
+    if (original.isBlank()) return;
+    String formatted = formatSqlClauses(original);
+    if (formatted.equals(original)) { status.setText(" SQL ja esta formatado."); return; }
+    int caret = editor.getCaretPosition();
+    editor.setText(formatted);
+    editor.setCaretPosition(Math.min(caret, formatted.length()));
+    editor.requestFocusInWindow();
+    status.setText(" SQL formatado. Atalho: Ctrl+Shift+F.");
+  }
+
+  private static String formatSqlClauses(String sql) {
+    boolean[] code = new boolean[sql.length()];
+    int[] depth = new int[sql.length()];
+    char quote = 0;
+    boolean lineComment = false, blockComment = false;
+    int nesting = 0;
+    for (int i = 0; i < sql.length(); i++) {
+      char ch = sql.charAt(i);
+      char next = i + 1 < sql.length() ? sql.charAt(i + 1) : 0;
+      if (lineComment) { if (ch == '\n') lineComment = false; continue; }
+      if (blockComment) { if (ch == '*' && next == '/') { i++; blockComment = false; } continue; }
+      if (quote != 0) {
+        if (ch == quote) { if (next == quote) i++; else quote = 0; }
+        else if (ch == '\\' && next != 0) i++;
+        continue;
+      }
+      if (ch == '-' && next == '-' && (i + 2 == sql.length() || Character.isWhitespace(sql.charAt(i + 2)))) { i++; lineComment = true; continue; }
+      if (ch == '#') { lineComment = true; continue; }
+      if (ch == '/' && next == '*') { i++; blockComment = true; continue; }
+      if (ch == '\'' || ch == '"' || ch == '`') { quote = ch; continue; }
+      if (ch == '(') nesting++;
+      if (ch == ')') nesting = Math.max(0, nesting - 1);
+      code[i] = true;
+      depth[i] = nesting;
+    }
+    java.util.regex.Pattern clauses = java.util.regex.Pattern.compile(
+        "(?i)\\b(?:LEFT\\s+OUTER\\s+JOIN|RIGHT\\s+OUTER\\s+JOIN|FULL\\s+OUTER\\s+JOIN|INNER\\s+JOIN|LEFT\\s+JOIN|RIGHT\\s+JOIN|CROSS\\s+JOIN|UNION\\s+ALL|GROUP\\s+BY|ORDER\\s+BY|FETCH\\s+NEXT|SELECT|FROM|WHERE|HAVING|LIMIT|JOIN|UNION|OFFSET)\\b");
+    java.util.regex.Matcher matcher = clauses.matcher(sql);
+    List<int[]> changes = new ArrayList<>();
+    while (matcher.find()) {
+      int pos = matcher.start();
+      if (pos == 0 || !code[pos] || depth[pos] != 0) continue;
+      boolean valid = true;
+      for (int k = pos; k < matcher.end(); k++) if (!code[k] || depth[k] != 0) { valid = false; break; }
+      if (!valid) continue;
+      int ws = pos;
+      while (ws > 0 && (sql.charAt(ws - 1) == ' ' || sql.charAt(ws - 1) == '\t')) ws--;
+      if (ws == pos) continue;
+      if (ws == 0 || sql.charAt(ws - 1) == '\n' || sql.charAt(ws - 1) == '\r') continue;
+      changes.add(new int[]{ws, pos});
+    }
+    StringBuilder result = new StringBuilder(sql);
+    for (int i = changes.size() - 1; i >= 0; i--) {
+      int[] range = changes.get(i);
+      result.replace(range[0], range[1], "\n");
+    }
+    return result.toString();
+  }
+
   private static void runQuery() {
     JTextArea queryEditor = activeEditor();
     if (federation == null) { status.setText(" Carregue as conexões primeiro."); queryEditor.requestFocusInWindow(); return; }
@@ -907,9 +1034,8 @@ public class Main {
     final String query = sql;
     rememberQuery(query);
     execute.setEnabled(false);
-    queryStarted = System.nanoTime();
-    status.setText(" Executando consulta...");
-    resultSummary.setText("  RESULTADOS  ·  Executando...");
+    final long started = System.nanoTime();
+    status.setText(" Executando consulta... Os resultados anteriores serao preservados.");
     currentQuery = new SwingWorker<>() {
       protected DefaultTableModel doInBackground() throws Exception {
         try (Statement stmt = federation.createStatement()) {
@@ -935,12 +1061,10 @@ public class Main {
         execute.setEnabled(true);
         try {
           DefaultTableModel model = get();
-          results.setModel(model);
-          configureColumns();
-          double elapsed = (System.nanoTime() - queryStarted) / 1_000_000_000.0;
-          resultSummary.setText(String.format(Locale.ROOT, "  RESULTADOS  ·  %,d linhas  ·  %.2f s", model.getRowCount(), elapsed));
+          double elapsed = (System.nanoTime() - started) / 1_000_000_000.0;
+          addResultTab(model, elapsed);
           status.setText(" Consulta concluída: " + model.getRowCount() + " linhas (limite: " + ROW_LIMIT + ").");
-        } catch (Exception ex) { resultSummary.setText("  RESULTADOS  ·  Erro na consulta"); status.setText(" Falha na consulta."); showError(ex); }
+        } catch (Exception ex) { status.setText(" Falha na consulta. Resultados anteriores preservados."); showError(ex); }
       }
     };
     currentQuery.execute();
@@ -948,7 +1072,7 @@ public class Main {
     SwingUtilities.invokeLater(queryEditor::requestFocusInWindow);
   }
 
-  private static void configureColumns() {
+  private static void configureColumns(JTable results) {
     for (int c = 0; c < results.getColumnCount(); c++) {
       TableColumn column = results.getColumnModel().getColumn(c);
       String header = results.getColumnName(c);
@@ -963,27 +1087,28 @@ public class Main {
   }
 
   private static void exportCsv() {
-    if (results.getColumnCount() == 0) { status.setText(" Execute uma consulta antes de exportar."); return; }
+    JTable selectedResults = results;
+    if (selectedResults == null || selectedResults.getColumnCount() == 0) { status.setText(" Execute uma consulta antes de exportar."); return; }
     JFileChooser chooser = new JFileChooser();
     chooser.setSelectedFile(new File("resultado.csv"));
     if (chooser.showSaveDialog(frame) != JFileChooser.APPROVE_OPTION) return;
     Path path = chooser.getSelectedFile().toPath();
     try (BufferedWriter out = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
       out.write('\uFEFF');
-      for (int c = 0; c < results.getColumnCount(); c++) {
+      for (int c = 0; c < selectedResults.getColumnCount(); c++) {
         if (c > 0) out.write(';');
-        out.write(csv(results.getColumnName(c)));
+        out.write(csv(selectedResults.getColumnName(c)));
       }
       out.newLine();
-      for (int r = 0; r < results.getRowCount(); r++) {
-        for (int c = 0; c < results.getColumnCount(); c++) {
+      for (int r = 0; r < selectedResults.getRowCount(); r++) {
+        for (int c = 0; c < selectedResults.getColumnCount(); c++) {
           if (c > 0) out.write(';');
-          Object value = results.getModel().getValueAt(r, c);
+          Object value = selectedResults.getValueAt(r, c);
           out.write(csv(value == null ? "" : value.toString()));
         }
         out.newLine();
       }
-      status.setText(" CSV exportado: " + path + " (" + results.getRowCount() + " linhas exibidas).");
+      status.setText(" CSV exportado: " + path + " (" + selectedResults.getRowCount() + " linhas exibidas).");
     } catch (Exception ex) { showError(ex); }
   }
 

@@ -112,7 +112,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 0.9");
+    frame = new JFrame("SantySQL Studio - 0.9.1");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -148,7 +148,39 @@ public class Main {
     execute.putClientProperty("JButton.buttonType", "roundRect");
     execute.setBackground(new Color(40, 116, 218));
     execute.setForeground(Color.WHITE);
-    for (JButton b : new JButton[]{load, manage, searchColumns, newTab, openSql, saveSql, closeTab, history, formatSql, execute, clear, export, themeButton}) toolbar.add(b);
+    // A barra principal fica compacta mesmo na largura minima de 900 px.
+    // Todas as acoes continuam disponiveis no menu superior.
+    for (JButton b : new JButton[]{load, newTab, openSql, saveSql, formatSql, execute, export}) toolbar.add(b);
+
+    JMenuBar menuBar = new JMenuBar();
+    JMenu fileMenu = new JMenu("Arquivo");
+    addMenuAction(fileMenu, "Nova aba SQL", newTab);
+    addMenuAction(fileMenu, "Abrir SQL...", openSql);
+    addMenuAction(fileMenu, "Salvar SQL", saveSql);
+    addMenuAction(fileMenu, "Fechar aba", closeTab);
+    menuBar.add(fileMenu);
+
+    JMenu sqlMenu = new JMenu("SQL");
+    addMenuAction(sqlMenu, "Executar SQL (Ctrl+Enter)", execute);
+    addMenuAction(sqlMenu, "Formatar SQL (Ctrl+Shift+F)", formatSql);
+    addMenuAction(sqlMenu, "Historico SQL", history);
+    menuBar.add(sqlMenu);
+
+    JMenu resultMenu = new JMenu("Resultados");
+    addMenuAction(resultMenu, "Exportar CSV...", export);
+    addMenuAction(resultMenu, "Limpar grade selecionada", clear);
+    menuBar.add(resultMenu);
+
+    JMenu connectionsMenu = new JMenu("Conexoes");
+    addMenuAction(connectionsMenu, "Carregar conexoes", load);
+    addMenuAction(connectionsMenu, "Gerenciar conexoes", manage);
+    addMenuAction(connectionsMenu, "Buscar coluna", searchColumns);
+    menuBar.add(connectionsMenu);
+
+    JMenu viewMenu = new JMenu("Aparencia");
+    addMenuAction(viewMenu, "Alternar tema claro/escuro", themeButton);
+    menuBar.add(viewMenu);
+    frame.setJMenuBar(menuBar);
 
     rootNode = new DefaultMutableTreeNode("Conexões MySQL");
     explorer = new JTree(rootNode);
@@ -252,6 +284,12 @@ public class Main {
     export.addActionListener(e -> exportCsv());
     themeButton.addActionListener(e -> toggleTheme());
     frame.setVisible(true);
+  }
+
+  private static void addMenuAction(JMenu menu, String label, JButton actionButton) {
+    JMenuItem item = new JMenuItem(label);
+    item.addActionListener(e -> actionButton.doClick());
+    menu.add(item);
   }
 
   private static void addSqlTab() {

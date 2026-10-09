@@ -105,7 +105,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 0.6.2");
+    frame = new JFrame("SantySQL Studio - 0.7.1.1");
     frame.setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
     frame.setSize(1360, 840);
     frame.setMinimumSize(new Dimension(900, 600));
@@ -113,6 +113,7 @@ public class Main {
 
     JButton load = new JButton("Carregar conexões");
     JButton manage = new JButton("Gerenciar conexões");
+    JButton searchColumns = new JButton("Buscar coluna");
     JButton newTab = new JButton("Nova aba SQL");
     JButton openSql = new JButton("Abrir SQL");
     JButton saveSql = new JButton("Salvar SQL");
@@ -125,7 +126,7 @@ public class Main {
     execute.putClientProperty("JButton.buttonType", "roundRect");
     execute.setBackground(new Color(40, 116, 218));
     execute.setForeground(Color.WHITE);
-    for (JButton b : new JButton[]{load, manage, newTab, openSql, saveSql, execute, clear, export, themeButton}) toolbar.add(b);
+    for (JButton b : new JButton[]{load, manage, searchColumns, newTab, openSql, saveSql, execute, clear, export, themeButton}) toolbar.add(b);
 
     rootNode = new DefaultMutableTreeNode("Conexões MySQL");
     explorer = new JTree(rootNode);
@@ -179,6 +180,8 @@ public class Main {
             new java.awt.datatransfer.StringSelection(qualifiedTable(table)), null);
       }
     });
+
+    searchColumns.addActionListener(e -> searchColumnsAcrossTables());
 
     tabs = new JTabbedPane();
     addSqlTab();
@@ -324,6 +327,101 @@ public class Main {
     status.setText(" Busca: " + matches.size() + " tabela(s) encontrada(s). Pressione Enter para a próxima.");
   }
 
+  // Pesquisa sob demanda no catálogo do servidor, sem carregar todas as colunas na memória.
+  private static void searchColumnsAcrossTables() {
+    if (SOURCES.isEmpty()) {
+      JOptionPane.showMessageDialog(frame, "Carregue as conexões primeiro.");
+      return;
+    }
+    JComboBox<String> serverBox = new JComboBox<>(SOURCES.keySet().toArray(new String[0]));
+    JTextField columnName = new JTextField(22);
+    JPanel panel = new JPanel(new GridLayout(2, 2, 8, 8));
+    panel.add(new JLabel("Servidor:")); panel.add(serverBox);
+    panel.add(new JLabel("Nome da coluna contém:")); panel.add(columnName);
+    if (JOptionPane.showConfirmDialog(frame, panel, "Pesquisar coluna", JOptionPane.OK_CANCEL_OPTION,
+        JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) return;
+    String term = columnName.getText().trim();
+    if (term.isEmpty()) return;
+    String server = (String) serverBox.getSelectedItem();
+    BasicDataSource ds = SOURCES.get(server);
+    if (ds == null) return;
+    status.setText(" Pesquisando coluna '" + term + "' em " + server + "...");
+    new SwingWorker<List<String>, Void>() {
+      protected List<String> doInBackground() throws Exception {
+        List<String> found = new ArrayList<>();
+        // A consulta usa os metadados do MySQL e limita o retorno a 300 colunas.
+        String sql = "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM information_schema.COLUMNS "
+            + "WHERE TABLE_SCHEMA = DATABASE() AND LOWER(COLUMN_NAME) LIKE ? ESCAPE '!' "
+            + "ORDER BY TABLE_NAME, ORDINAL_POSITION LIMIT 300";
+        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+          ps.setString(1, "%" + term.toLowerCase(Locale.ROOT).replace("!", "!!")
+              .replace("%", "!%").replace("_", "!_") + "%");
+          try (ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) found.add(rs.getString(1) + "." + rs.getString(2) + "  :  " + rs.getString(3));
+          }
+        }
+        return found;
+      }
+      protected void done() {
+        try {
+          List<String> found = get();
+          status.setText(" Pesquisa de colunas: " + found.size() + " resultado(s) em " + server + ".");
+          JTextArea output = new JTextArea(found.isEmpty() ? "Nenhuma coluna encontrada." : String.join("\n", found));
+          output.setEditable(false);
+          output.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+          JScrollPane pane = new JScrollPane(output);
+          pane.setPreferredSize(new Dimension(680, 430));
+          JOptionPane.showMessageDialog(frame, pane, "Colunas encontradas — " + server, JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) { showError(ex); }
+      }
+    }.execute();
+  }
+
+  private record AliasTable(String source, String table) {}
+
+  // Analisa FROM/JOIN no comando SQL inteiro, inclusive depois da posicao do cursor.
+  // Aceita nomes entre aspas duplas/backticks e aliases com ou sem AS.
+  private static final java.util.regex.Pattern TABLE_REFERENCE = java.util.regex.Pattern.compile(
+      "(?i)\\b(?:FROM|JOIN)\\s+[`\"]?([a-z][a-z0-9_]*)[`\"]?\\s*\\.\\s*[`\"]?([a-z0-9_]+)[`\"]?" +
+      "(?:\\s+(?:AS\\s+)?([a-z_][a-z0-9_]*))?");
+
+  private static boolean isSqlKeyword(String word) {
+    if (word == null) return false;
+    return java.util.Arrays.asList("WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "ON",
+        "GROUP", "ORDER", "HAVING", "LIMIT", "FETCH", "UNION", "EXCEPT", "INTERSECT", "OFFSET",
+        "WINDOW", "QUALIFY").contains(word.toUpperCase(Locale.ROOT));
+  }
+
+  private static AliasTable resolveAlias(String sql, String alias) {
+    java.util.regex.Matcher m = TABLE_REFERENCE.matcher(sql);
+    AliasTable found = null;
+    while (m.find()) {
+      String source = resolveSource(m.group(1));
+      if (source == null) continue;
+      String table = m.group(2);
+      String declaredAlias = m.group(3);
+      if (alias.equalsIgnoreCase(table) || (declaredAlias != null &&
+          !isSqlKeyword(declaredAlias) && alias.equalsIgnoreCase(declaredAlias))) {
+        found = new AliasTable(source, table);
+      }
+    }
+    return found;
+  }
+
+  // Evita capturar aliases de outro comando SQL na mesma aba.
+  private static String completionStatement(String sql, int caret) {
+    int start = 0, end = sql.length();
+    // Os comandos sao separados por ';'. O editor ja usa esse criterio para executar SQL.
+    // Aqui o objetivo e manter o contexto da consulta em que o cursor esta.
+    for (int i = 0; i < sql.length(); i++) {
+      if (sql.charAt(i) == ';') {
+        if (i < caret) start = i + 1;
+        else { end = i; break; }
+      }
+    }
+    return sql.substring(start, Math.max(start, end));
+  }
+
   private static String resolveSource(String name) {
     for (String source : SOURCES.keySet()) if (source.equalsIgnoreCase(name)) return source;
     return null;
@@ -390,12 +488,40 @@ public class Main {
     while (start > 0 && (Character.isLetterOrDigit(before.charAt(start - 1)) || before.charAt(start - 1) == '_')) start--;
     String prefix = before.substring(start).toLowerCase(Locale.ROOT);
     String left = before.substring(0, start);
-    java.util.regex.Matcher sourceMatcher = java.util.regex.Pattern.compile("(?i)([a-z][a-z0-9_]*)\\.\\s*$").matcher(left);
-    String source = sourceMatcher.find() ? resolveSource(sourceMatcher.group(1)) : null;
+    java.util.regex.Matcher qualifierMatcher = java.util.regex.Pattern.compile(
+        "(?i)([a-z_][a-z0-9_]*)\\.\\s*$").matcher(left);
+    String qualifier = qualifierMatcher.find() ? qualifierMatcher.group(1) : null;
+    String source = qualifier == null ? null : resolveSource(qualifier);
     boolean afterDot = source != null;
+    String contextSql = completionStatement(editor.getText(), caret);
+    AliasTable aliasTable = !afterDot && qualifier != null ? resolveAlias(contextSql, qualifier) : null;
+    if (qualifier != null && !afterDot && aliasTable == null) {
+      status.setText(" Alias '" + qualifier + "' nao encontrado em FROM/JOIN desta consulta.");
+      return;
+    }
     Set<String> candidates = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
 
-    if (afterDot) {
+    if (aliasTable != null) {
+      String key = aliasTable.source() + "." + aliasTable.table();
+      List<String> columns = COLUMN_CACHE.get(key);
+      if (columns == null) {
+        if (allowLoad) {
+          status.setText(" Carregando colunas de " + key + "...");
+          int originalCaret = caret;
+          fetchColumns(aliasTable.source(), aliasTable.table(), null);
+          javax.swing.Timer retry = new javax.swing.Timer(250, null);
+          final int[] attempts = {0};
+          retry.addActionListener(event -> {
+            if (!editor.isShowing() || editor.getCaretPosition() != originalCaret || ++attempts[0] > 24) retry.stop();
+            else if (COLUMN_CACHE.containsKey(key)) { retry.stop(); showCompletions(editor, false); }
+            else if (!COLUMN_LOADING.contains(key)) retry.stop();
+          });
+          retry.start();
+        }
+        return;
+      }
+      candidates.addAll(columns);
+    } else if (afterDot) {
       List<String> tables = TABLE_CACHE.get(source);
       if (tables == null) {
         if (allowLoad) {
@@ -420,6 +546,10 @@ public class Main {
         return;
       }
       candidates.addAll(tables);
+    } else if (qualifier != null) {
+      // Expressao qualificada: nunca misturar keywords e tabelas quando o alias nao foi localizado.
+      status.setText(" Alias '" + qualifier + "' nao encontrado. Confira o FROM/JOIN e a conexao.");
+      return;
     } else {
       Collections.addAll(candidates, SQL_WORDS);
       candidates.addAll(SOURCES.keySet());
@@ -428,7 +558,7 @@ public class Main {
 
       // Sugestao de colunas a partir de tabelas explicitamente citadas na consulta.
       java.util.regex.Matcher tablesInSql = java.util.regex.Pattern.compile(
-          "(?i)\\b(?:FROM|JOIN)\\s+([a-z][a-z0-9_]*)\\.\\\"?([a-z0-9_]+)\\\"?").matcher(before);
+          "(?i)\\b(?:FROM|JOIN)\\s+([a-z][a-z0-9_]*)\\.\\\"?([a-z0-9_]+)\\\"?").matcher(contextSql);
       while (tablesInSql.find()) {
         String server = resolveSource(tablesInSql.group(1));
         if (server == null) continue;

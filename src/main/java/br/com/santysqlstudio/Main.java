@@ -61,7 +61,8 @@ public class Main {
   private static final java.util.concurrent.atomic.AtomicReference<Statement> RUNNING_STATEMENT = new java.util.concurrent.atomic.AtomicReference<>();
   private static final java.util.concurrent.atomic.AtomicReference<Connection> RUNNING_CONNECTION = new java.util.concurrent.atomic.AtomicReference<>();
   private static final java.util.concurrent.atomic.AtomicBoolean CANCEL_REQUESTED = new java.util.concurrent.atomic.AtomicBoolean(false);
-  private static SwingWorker<DefaultTableModel, Void> currentQuery;
+  private static SwingWorker<?, ?> currentQuery;
+  private static JButton executeScriptButton;
   private static final Map<Component, Path> OPEN_FILES = new IdentityHashMap<>();
   private static JTextField tableSearch;
   private static final Map<Component, String> SAVED_TEXT = new IdentityHashMap<>();
@@ -125,7 +126,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 1.3");
+    frame = new JFrame("SantySQL Studio - 1.4.2");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -155,6 +156,7 @@ public class Main {
     JButton history = new JButton("Histórico SQL");
     JButton formatSql = new JButton("Formatar SQL");
     execute = new JButton("Executar SQL  (Ctrl+Enter)");
+    executeScriptButton = new JButton("Executar script");
     cancelQueryButton = new JButton("Cancelar consulta");
     cancelQueryButton.setEnabled(false);
     JButton clear = new JButton("Limpar grade");
@@ -182,6 +184,7 @@ public class Main {
     renameTab.addActionListener(e -> renameActiveTab());
     fileMenu.add(renameTab);
     addMenuAction(sqlMenu, "Executar SQL (Ctrl+Enter)", execute);
+    addMenuAction(sqlMenu, "Executar script (Ctrl+Shift+Enter)", executeScriptButton);
     addMenuAction(sqlMenu, "Cancelar consulta", cancelQueryButton);
     addMenuAction(sqlMenu, "Formatar SQL (Ctrl+Shift+F)", formatSql);
     addMenuAction(sqlMenu, "Historico SQL", history);
@@ -335,6 +338,7 @@ public class Main {
     history.addActionListener(e -> showHistory());
     formatSql.addActionListener(e -> formatActiveSql());
     execute.addActionListener(e -> runQuery());
+    executeScriptButton.addActionListener(e -> runScript());
     cancelQueryButton.addActionListener(e -> cancelRunningQuery());
     clear.addActionListener(e -> clearSelectedResult());
     export.addActionListener(e -> exportCsv());
@@ -361,6 +365,8 @@ public class Main {
     area.setTabSize(2);
     if (tabs.getTabCount() == 0) area.setText("SELECT *\nFROM SRV_ARRAIAL.cad_usu0\nFETCH NEXT 100 ROWS ONLY;");
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.CTRL_DOWN_MASK), "runSql");
+    area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK), "runScript");
+    area.getActionMap().put("runScript", new AbstractAction() { public void actionPerformed(ActionEvent e) { runScript(); } });
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_SPACE, InputEvent.CTRL_DOWN_MASK), "sqlComplete");
     area.getActionMap().put("sqlComplete", new AbstractAction() { public void actionPerformed(ActionEvent e) { showCompletions(area); } });
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK), "saveSql");
@@ -1267,7 +1273,7 @@ public class Main {
   }
 
   private static void cancelRunningQuery() {
-    SwingWorker<DefaultTableModel, Void> worker = currentQuery;
+    SwingWorker<?, ?> worker = currentQuery;
     if (worker == null || worker.isDone()) return;
     CANCEL_REQUESTED.set(true);
     cancelQueryButton.setEnabled(false);
@@ -1344,6 +1350,39 @@ public class Main {
     resultTabs.setTabComponentAt(index, resultTabHeader(title, scroll));
     resultTabs.setSelectedComponent(scroll);
     configureColumns(table);
+  }
+
+  // Reutiliza a aba da mesma consulta e da mesma aba SQL; outras consultas permanecem intactas.
+  private static void showOrUpdateResultTab(DefaultTableModel model, double elapsed, Component sqlTab, String sql) {
+    String key = sql.trim();
+    for (int i = 0; i < resultTabs.getTabCount(); i++) {
+      Component component = resultTabs.getComponentAt(i);
+      if (!(component instanceof JScrollPane scroll)) continue;
+      if (scroll.getClientProperty("sqlSourceTab") != sqlTab ||
+          !key.equals(scroll.getClientProperty("sqlQueryKey"))) continue;
+      JTable table = newResultTable(model);
+      scroll.setViewportView(table);
+      scroll.putClientProperty("resultSummary", String.format(Locale.ROOT,
+          "  RESULTADOS  ·  %,d linhas  ·  %.2f s", model.getRowCount(), elapsed));
+      scroll.putClientProperty("resultFilter", "");
+      scroll.putClientProperty("resultFilterColumn", 0);
+      String oldTitle = resultTabs.getTitleAt(i);
+      int suffix = oldTitle.lastIndexOf(" (");
+      String prefix = suffix >= 0 && oldTitle.endsWith(")") ? oldTitle.substring(0, suffix) : oldTitle;
+      String title = prefix + " (" + model.getRowCount() + ")";
+      resultTabs.setTitleAt(i, title);
+      resultTabs.setTabComponentAt(i, resultTabHeader(title, scroll));
+      resultTabs.setSelectedIndex(i);
+      configureColumns(table);
+      selectResultTab();
+      return;
+    }
+    addResultTab(model, elapsed);
+    Component created = resultTabs.getSelectedComponent();
+    if (created instanceof JScrollPane scroll) {
+      scroll.putClientProperty("sqlSourceTab", sqlTab);
+      scroll.putClientProperty("sqlQueryKey", key);
+    }
   }
 
   private static Component resultTabHeader(String title, Component content) {
@@ -1438,13 +1477,15 @@ public class Main {
     while (sql.endsWith(";")) sql = sql.substring(0, sql.length() - 1).trim();
     if (sql.isBlank()) { status.setText(" Posicione o cursor em uma consulta ou selecione o SQL."); queryEditor.requestFocusInWindow(); return; }
     final String query = sql;
+    final Component sqlTab = tabs.getSelectedComponent();
     rememberQuery(query);
     execute.setEnabled(false);
+    executeScriptButton.setEnabled(false);
     cancelQueryButton.setEnabled(true);
     CANCEL_REQUESTED.set(false);
     final long started = System.nanoTime();
     status.setText(" Executando consulta... Os resultados anteriores serao preservados.");
-    currentQuery = new SwingWorker<>() {
+    currentQuery = new SwingWorker<DefaultTableModel, Void>() {
       protected DefaultTableModel doInBackground() throws Exception {
         Connection queryConnection = null;
         Statement stmt = null;
@@ -1487,11 +1528,12 @@ public class Main {
       protected void done() {
         if (currentQuery != this) return;
         execute.setEnabled(true);
+        executeScriptButton.setEnabled(true);
         cancelQueryButton.setEnabled(false);
         try {
           DefaultTableModel model = get();
           double elapsed = (System.nanoTime() - started) / 1_000_000_000.0;
-          addResultTab(model, elapsed);
+          showOrUpdateResultTab(model, elapsed, sqlTab, query);
           status.setText(" Consulta concluída: " + model.getRowCount() + " linhas (limite: " + ROW_LIMIT + ").");
         } catch (Exception ex) {
           if (CANCEL_REQUESTED.get()) status.setText(" Consulta cancelada. Resultados anteriores preservados.");
@@ -1502,6 +1544,119 @@ public class Main {
     currentQuery.execute();
     // Ctrl+Enter deve manter o teclado no editor, sem alterar cursor ou seleção.
     SwingUtilities.invokeLater(queryEditor::requestFocusInWindow);
+  }
+
+  // Separa comandos SQL sem quebrar strings ou comentarios.
+  private static List<String> splitScript(String sql) {
+    List<String> statements = new ArrayList<>();
+    int start = 0;
+    char quote = 0;
+    boolean lineComment = false, blockComment = false;
+    for (int i = 0; i < sql.length(); i++) {
+      char ch = sql.charAt(i);
+      char next = i + 1 < sql.length() ? sql.charAt(i + 1) : 0;
+      if (lineComment) { if (ch == '\n') lineComment = false; continue; }
+      if (blockComment) { if (ch == '*' && next == '/') { blockComment = false; i++; } continue; }
+      if (quote != 0) {
+        if (ch == quote) { if (next == quote) i++; else quote = 0; }
+        else if (ch == '\\' && next != 0) i++;
+        continue;
+      }
+      if (ch == '-' && next == '-' && (i + 2 == sql.length() || Character.isWhitespace(sql.charAt(i + 2)))) { lineComment = true; i++; continue; }
+      if (ch == '#') { lineComment = true; continue; }
+      if (ch == '/' && next == '*') { blockComment = true; i++; continue; }
+      if (ch == '\'' || ch == '"' || ch == '`') { quote = ch; continue; }
+      if (ch == ';') {
+        String part = sql.substring(start, i).trim();
+        if (!part.isBlank()) statements.add(part);
+        start = i + 1;
+      }
+    }
+    String last = sql.substring(start).trim();
+    if (!last.isBlank()) statements.add(last);
+    return statements;
+  }
+
+  private record ScriptResult(DefaultTableModel model, double elapsed, int index, int updated) {}
+
+  private static void runScript() {
+    JTextArea editor = activeEditor();
+    if (federation == null) { status.setText(" Carregue as conexoes primeiro."); return; }
+    if (currentQuery != null && !currentQuery.isDone()) return;
+    String selected = editor.getSelectedText();
+    List<String> commands = splitScript(selected != null && !selected.isBlank() ? selected : editor.getText());
+    if (commands.isEmpty()) { status.setText(" Nenhum comando SQL para executar."); return; }
+    execute.setEnabled(false);
+    executeScriptButton.setEnabled(false);
+    cancelQueryButton.setEnabled(true);
+    CANCEL_REQUESTED.set(false);
+    status.setText(" Executando script: " + commands.size() + " comando(s)...");
+    final Component sqlTab = tabs.getSelectedComponent();
+    currentQuery = new SwingWorker<Void, ScriptResult>() {
+      protected Void doInBackground() throws Exception {
+        for (int index = 0; index < commands.size(); index++) {
+          if (isCancelled() || Thread.currentThread().isInterrupted()) break;
+          String sql = commands.get(index);
+          long started = System.nanoTime();
+          Connection connection = null;
+          Statement stmt = null;
+          try {
+            connection = openQueryConnection();
+            stmt = connection.createStatement();
+            RUNNING_CONNECTION.set(connection);
+            RUNNING_STATEMENT.set(stmt);
+            if (isCancelled()) break;
+            stmt.setMaxRows(ROW_LIMIT);
+            stmt.setQueryTimeout(120);
+            boolean hasResult = stmt.execute(sql);
+            DefaultTableModel model = null;
+            int updated = -1;
+            if (hasResult) {
+              try (ResultSet rs = stmt.getResultSet()) {
+                ResultSetMetaData meta = rs.getMetaData();
+                String[] headers = new String[meta.getColumnCount()];
+                for (int i = 0; i < headers.length; i++) headers[i] = meta.getColumnLabel(i + 1);
+                model = new DefaultTableModel(headers, 0) {
+                  public boolean isCellEditable(int row, int col) { return false; }
+                };
+                while (!isCancelled() && !Thread.currentThread().isInterrupted() && rs.next() && model.getRowCount() < ROW_LIMIT) {
+                  Object[] row = new Object[headers.length];
+                  for (int i = 0; i < row.length; i++) row[i] = rs.getObject(i + 1);
+                  model.addRow(row);
+                }
+              }
+            } else updated = stmt.getUpdateCount();
+            if (isCancelled() || Thread.currentThread().isInterrupted()) break;
+            publish(new ScriptResult(model, (System.nanoTime() - started) / 1_000_000_000.0, index + 1, updated));
+          } finally {
+            RUNNING_STATEMENT.compareAndSet(stmt, null);
+            RUNNING_CONNECTION.compareAndSet(connection, null);
+            if (stmt != null) try { stmt.close(); } catch (SQLException ignored) {}
+            if (connection != null) try { connection.close(); } catch (SQLException ignored) {}
+          }
+        }
+        return null;
+      }
+      protected void process(List<ScriptResult> chunks) {
+        for (ScriptResult result : chunks) {
+          if (result.model() != null) showOrUpdateResultTab(result.model(), result.elapsed(), sqlTab, commands.get(result.index() - 1));
+          status.setText(" Script: comando " + result.index() + "/" + commands.size() +
+              (result.model() != null ? " - " + result.model().getRowCount() + " linha(s)." :
+                  " - " + result.updated() + " registro(s) afetado(s)."));
+        }
+      }
+      protected void done() {
+        if (currentQuery != this) return;
+        execute.setEnabled(true);
+        executeScriptButton.setEnabled(true);
+        cancelQueryButton.setEnabled(false);
+        if (CANCEL_REQUESTED.get()) { status.setText(" Script cancelado. Resultados concluidos preservados."); return; }
+        try { get(); status.setText(" Script concluido: " + commands.size() + " comando(s)."); }
+        catch (Exception ex) { status.setText(" Script interrompido por erro. Resultados anteriores preservados."); showError(ex); }
+      }
+    };
+    currentQuery.execute();
+    SwingUtilities.invokeLater(editor::requestFocusInWindow);
   }
 
   private static void configureColumns(JTable results) {

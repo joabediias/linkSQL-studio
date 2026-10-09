@@ -17,6 +17,8 @@ import org.fife.ui.rtextarea.RTextScrollPane;
 
 import javax.swing.*;
 import javax.swing.event.TreeSelectionEvent;
+import javax.swing.event.DocumentListener;
+import javax.swing.event.DocumentEvent;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.table.TableColumn;
 import javax.swing.tree.*;
@@ -52,6 +54,10 @@ public class Main {
   private static SwingWorker<DefaultTableModel, Void> currentQuery;
   private static final Map<Component, Path> OPEN_FILES = new IdentityHashMap<>();
   private static JTextField tableSearch;
+  private static final Map<Component, String> SAVED_TEXT = new IdentityHashMap<>();
+  private static final Path HISTORY_FILE = Paths.get(System.getProperty("user.home"), ".santysql-studio", "sql-history.txt");
+  private static final int HISTORY_LIMIT = 100;
+  private static int nextTabNumber = 1;
   // Cache de metadados: consultas JDBC executadas fora da thread da interface.
   private static final Map<String, List<String>> TABLE_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
   private static final Map<String, List<String>> COLUMN_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
@@ -105,8 +111,20 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 0.7.1.1");
-    frame.setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
+    frame = new JFrame("SantySQL Studio - 0.8");
+    frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
+    frame.addWindowListener(new WindowAdapter() {
+      public void windowClosing(WindowEvent e) {
+        if (tabs != null) {
+          for (int i = tabs.getTabCount() - 1; i >= 0; i--) {
+            if (!closeSqlTab(i, false)) return;
+          }
+        }
+        closeResources();
+        frame.dispose();
+        System.exit(0);
+      }
+    });
     frame.setSize(1360, 840);
     frame.setMinimumSize(new Dimension(900, 600));
     frame.setLocationRelativeTo(null);
@@ -117,6 +135,8 @@ public class Main {
     JButton newTab = new JButton("Nova aba SQL");
     JButton openSql = new JButton("Abrir SQL");
     JButton saveSql = new JButton("Salvar SQL");
+    JButton closeTab = new JButton("Fechar aba");
+    JButton history = new JButton("Histórico SQL");
     execute = new JButton("Executar SQL  (Ctrl+Enter)");
     JButton clear = new JButton("Limpar grade");
     JButton export = new JButton("Exportar CSV");
@@ -126,7 +146,7 @@ public class Main {
     execute.putClientProperty("JButton.buttonType", "roundRect");
     execute.setBackground(new Color(40, 116, 218));
     execute.setForeground(Color.WHITE);
-    for (JButton b : new JButton[]{load, manage, searchColumns, newTab, openSql, saveSql, execute, clear, export, themeButton}) toolbar.add(b);
+    for (JButton b : new JButton[]{load, manage, searchColumns, newTab, openSql, saveSql, closeTab, history, execute, clear, export, themeButton}) toolbar.add(b);
 
     rootNode = new DefaultMutableTreeNode("Conexões MySQL");
     explorer = new JTree(rootNode);
@@ -230,6 +250,8 @@ public class Main {
     newTab.addActionListener(e -> addSqlTab());
     openSql.addActionListener(e -> openSqlFile());
     saveSql.addActionListener(e -> saveSqlFile(false));
+    closeTab.addActionListener(e -> closeSqlTab(tabs.getSelectedIndex()));
+    history.addActionListener(e -> showHistory());
     execute.addActionListener(e -> runQuery());
     clear.addActionListener(e -> results.setModel(new DefaultTableModel()));
     export.addActionListener(e -> exportCsv());
@@ -257,11 +279,17 @@ public class Main {
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_O, InputEvent.CTRL_DOWN_MASK), "openSql");
     area.getActionMap().put("openSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { openSqlFile(); } });
     area.getActionMap().put("runSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { runQuery(); } });
-    String title = "SQL " + (tabs.getTabCount() + 1);
+    String title = "SQL " + (nextTabNumber++);
     RTextScrollPane scroll = new RTextScrollPane(area);
     scroll.setLineNumbersEnabled(true);
     scroll.setFoldIndicatorEnabled(true);
     tabs.addTab(title, scroll);
+    SAVED_TEXT.put(scroll, area.getText());
+    area.getDocument().addDocumentListener(new DocumentListener() {
+      public void insertUpdate(DocumentEvent e) { updateDirtyTitle(scroll); }
+      public void removeUpdate(DocumentEvent e) { updateDirtyTitle(scroll); }
+      public void changedUpdate(DocumentEvent e) { updateDirtyTitle(scroll); }
+    });
     tabs.setSelectedIndex(tabs.getTabCount() - 1);
   }
 
@@ -274,31 +302,126 @@ public class Main {
       addSqlTab();
       activeEditor().setText(Files.readString(file, StandardCharsets.UTF_8));
       OPEN_FILES.put(tabs.getSelectedComponent(), file);
+      SAVED_TEXT.put(tabs.getSelectedComponent(), activeEditor().getText());
       tabs.setTitleAt(tabs.getSelectedIndex(), file.getFileName().toString());
       status.setText(" Script aberto: " + file);
     } catch (IOException ex) { showError(ex); }
   }
 
-  private static void saveSqlFile(boolean saveAs) {
+  private static boolean saveSqlFile(boolean saveAs) {
     Component tab = tabs.getSelectedComponent();
-    if (tab == null) return;
+    if (tab == null) return false;
     Path file = saveAs ? null : OPEN_FILES.get(tab);
     if (file == null) {
       JFileChooser chooser = new JFileChooser();
       chooser.setSelectedFile(new File("consulta.sql"));
       chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Scripts SQL (*.sql)", "sql"));
-      if (chooser.showSaveDialog(frame) != JFileChooser.APPROVE_OPTION) return;
+      if (chooser.showSaveDialog(frame) != JFileChooser.APPROVE_OPTION) return false;
       file = chooser.getSelectedFile().toPath();
       if (!file.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".sql"))
         file = file.resolveSibling(file.getFileName() + ".sql");
-      if (Files.exists(file) && JOptionPane.showConfirmDialog(frame, "Sobrescrever " + file.getFileName() + "?", "Confirmar", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
+      if (Files.exists(file) && JOptionPane.showConfirmDialog(frame, "Sobrescrever " + file.getFileName() + "?", "Confirmar", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return false;
     }
     try {
       Files.writeString(file, activeEditor().getText(), StandardCharsets.UTF_8);
       OPEN_FILES.put(tab, file);
+      SAVED_TEXT.put(tab, activeEditor().getText());
       tabs.setTitleAt(tabs.getSelectedIndex(), file.getFileName().toString());
       status.setText(" Script salvo: " + file);
-    } catch (IOException ex) { showError(ex); }
+      return true;
+    } catch (IOException ex) { showError(ex); return false; }
+  }
+
+  private static RSyntaxTextArea editorOf(Component tab) {
+    return (RSyntaxTextArea) ((JScrollPane) tab).getViewport().getView();
+  }
+
+  private static void updateDirtyTitle(Component tab) {
+    int index = tabs.indexOfComponent(tab);
+    if (index < 0) return;
+    boolean dirty = !Objects.equals(editorOf(tab).getText(), SAVED_TEXT.get(tab));
+    String name = OPEN_FILES.containsKey(tab) ? OPEN_FILES.get(tab).getFileName().toString()
+        : tabs.getTitleAt(index).replaceFirst("^\\* ", "");
+    tabs.setTitleAt(index, (dirty ? "* " : "") + name);
+  }
+
+  private static boolean closeSqlTab(int index) { return closeSqlTab(index, true); }
+
+  private static boolean closeSqlTab(int index, boolean ensureOneTab) {
+    if (index < 0 || index >= tabs.getTabCount()) return true;
+    Component tab = tabs.getComponentAt(index);
+    if (!Objects.equals(editorOf(tab).getText(), SAVED_TEXT.get(tab))) {
+      tabs.setSelectedIndex(index);
+      int choice = JOptionPane.showOptionDialog(frame,
+          "Existem alterações não salvas em " + tabs.getTitleAt(index) + ".",
+          "Fechar aba SQL", JOptionPane.YES_NO_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE,
+          null, new String[]{"Salvar", "Descartar", "Cancelar"}, "Salvar");
+      if (choice == 0) { if (!saveSqlFile(false)) return false; }
+      else if (choice != 1) return false;
+    }
+    OPEN_FILES.remove(tab);
+    SAVED_TEXT.remove(tab);
+    tabs.removeTabAt(index);
+    if (ensureOneTab && tabs.getTabCount() == 0 && frame.isDisplayable()) addSqlTab();
+    return true;
+  }
+
+  private static List<String> readHistory() {
+    if (!Files.exists(HISTORY_FILE)) return new ArrayList<>();
+    try {
+      List<String> entries = new ArrayList<>();
+      for (String line : Files.readAllLines(HISTORY_FILE, StandardCharsets.UTF_8)) {
+        try { entries.add(new String(Base64.getDecoder().decode(line), StandardCharsets.UTF_8)); }
+        catch (IllegalArgumentException ignored) { }
+      }
+      return entries;
+    } catch (IOException ex) { return new ArrayList<>(); }
+  }
+
+  private static void rememberQuery(String sql) {
+    try {
+      List<String> entries = readHistory();
+      entries.remove(sql);
+      entries.add(0, sql);
+      if (entries.size() > HISTORY_LIMIT) entries = new ArrayList<>(entries.subList(0, HISTORY_LIMIT));
+      Files.createDirectories(HISTORY_FILE.getParent());
+      List<String> encoded = new ArrayList<>();
+      for (String entry : entries) encoded.add(Base64.getEncoder().encodeToString(entry.getBytes(StandardCharsets.UTF_8)));
+      Files.write(HISTORY_FILE, encoded, StandardCharsets.UTF_8);
+    } catch (IOException ex) { status.setText(" Aviso: não foi possível salvar o histórico SQL."); }
+  }
+
+  private static void showHistory() {
+    List<String> entries = readHistory();
+    if (entries.isEmpty()) {
+      JOptionPane.showMessageDialog(frame, "Ainda não existem consultas no histórico.");
+      return;
+    }
+    DefaultListModel<String> labels = new DefaultListModel<>();
+    for (String sql : entries) {
+      String oneLine = sql.replaceAll("\\s+", " ").trim();
+      labels.addElement(oneLine.length() > 110 ? oneLine.substring(0, 110) + "..." : oneLine);
+    }
+    JList<String> list = new JList<>(labels);
+    list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+    list.setSelectedIndex(0);
+    JTextArea preview = new JTextArea(entries.get(0), 10, 70);
+    preview.setEditable(false);
+    preview.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+    list.addListSelectionListener(e -> {
+      if (!e.getValueIsAdjusting() && list.getSelectedIndex() >= 0)
+        preview.setText(entries.get(list.getSelectedIndex()));
+    });
+    JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, new JScrollPane(list), new JScrollPane(preview));
+    split.setResizeWeight(.45);
+    split.setPreferredSize(new Dimension(780, 450));
+    int choice = JOptionPane.showConfirmDialog(frame, split, "Histórico de consultas — selecionar para abrir em nova aba",
+        JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+    if (choice == JOptionPane.OK_OPTION && list.getSelectedIndex() >= 0) {
+      addSqlTab();
+      activeEditor().setText(entries.get(list.getSelectedIndex()));
+      activeEditor().requestFocusInWindow();
+    }
   }
 
   private static void findTable() {
@@ -782,6 +905,7 @@ public class Main {
     while (sql.endsWith(";")) sql = sql.substring(0, sql.length() - 1).trim();
     if (sql.isBlank()) { status.setText(" Posicione o cursor em uma consulta ou selecione o SQL."); queryEditor.requestFocusInWindow(); return; }
     final String query = sql;
+    rememberQuery(query);
     execute.setEnabled(false);
     queryStarted = System.nanoTime();
     status.setText(" Executando consulta...");

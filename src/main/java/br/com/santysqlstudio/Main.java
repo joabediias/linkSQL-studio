@@ -44,13 +44,13 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio â€” 0.3");
+    frame = new JFrame("SantySQL Studio - 0.4");
     frame.setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
     frame.setSize(1250, 790);
     frame.setLocationRelativeTo(null);
 
-    JButton load = new JButton("Carregar conexÃµes");
-    JButton manage = new JButton("Gerenciar conexÃµes");
+    JButton load = new JButton("Carregar conexões");
+    JButton manage = new JButton("Gerenciar conexões");
     JButton newTab = new JButton("Nova aba SQL");
     execute = new JButton("Executar SQL  (Ctrl+Enter)");
     JButton clear = new JButton("Limpar grade");
@@ -58,13 +58,16 @@ public class Main {
     JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 7, 5));
     for (JButton b : new JButton[]{load, manage, newTab, execute, clear, export}) toolbar.add(b);
 
-    rootNode = new DefaultMutableTreeNode("ConexÃµes MySQL");
+    rootNode = new DefaultMutableTreeNode("Conexões MySQL");
     explorer = new JTree(rootNode);
     explorer.setRootVisible(true);
     explorer.addTreeWillExpandListener(new javax.swing.event.TreeWillExpandListener() {
       public void treeWillExpand(javax.swing.event.TreeExpansionEvent event) {
         Object node = event.getPath().getLastPathComponent();
-        if (node instanceof DefaultMutableTreeNode n && n.getUserObject() instanceof SourceNode source && !source.loaded) loadTables(n, source.name);
+        if (node instanceof DefaultMutableTreeNode n) {
+          if (n.getUserObject() instanceof SourceNode source && !source.loaded) loadTables(n, source.name);
+          if (n.getUserObject() instanceof TableNode table && !table.loaded) loadColumns(n, table);
+        }
       }
       public void treeWillCollapse(javax.swing.event.TreeExpansionEvent event) {}
     });
@@ -74,7 +77,35 @@ public class Main {
         TreePath path = explorer.getPathForLocation(e.getX(), e.getY());
         if (path == null) return;
         DefaultMutableTreeNode node = (DefaultMutableTreeNode) path.getLastPathComponent();
-        if (node.getUserObject() instanceof TableNode table) activeEditor().insert("SELECT * FROM " + table.source + ".\"" + table.table.replace("\"", "\"\"") + "\" FETCH NEXT 100 ROWS ONLY;", activeEditor().getCaretPosition());
+        if (node.getUserObject() instanceof TableNode table) insertTableSql(table);
+      }
+    });
+    JPopupMenu tableMenu = new JPopupMenu();
+    JMenuItem queryTable = new JMenuItem("Consultar dados (100 linhas)");
+    JMenuItem copyTable = new JMenuItem("Copiar nome completo");
+    tableMenu.add(queryTable);
+    tableMenu.add(copyTable);
+    final TableNode[] selectedTable = new TableNode[1];
+    explorer.addMouseListener(new MouseAdapter() {
+      private void popup(MouseEvent e) {
+        if (!e.isPopupTrigger()) return;
+        TreePath path = explorer.getPathForLocation(e.getX(), e.getY());
+        if (path == null) return;
+        Object item = ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
+        if (!(item instanceof TableNode table)) return;
+        selectedTable[0] = table;
+        explorer.setSelectionPath(path);
+        tableMenu.show(explorer, e.getX(), e.getY());
+      }
+      public void mousePressed(MouseEvent e) { popup(e); }
+      public void mouseReleased(MouseEvent e) { popup(e); }
+    });
+    queryTable.addActionListener(e -> { if (selectedTable[0] != null) insertTableSql(selectedTable[0]); });
+    copyTable.addActionListener(e -> {
+      if (selectedTable[0] != null) {
+        TableNode table = selectedTable[0];
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(
+            new java.awt.datatransfer.StringSelection(qualifiedTable(table)), null);
       }
     });
 
@@ -92,7 +123,7 @@ public class Main {
     JSplitPane horizontal = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, new JScrollPane(explorer), vertical);
     horizontal.setResizeWeight(.19);
     horizontal.setDividerLocation(240);
-    status = new JLabel(" Carregue as conexÃµes para iniciar. | Limite de visualizaÃ§Ã£o: " + ROW_LIMIT + " linhas");
+    status = new JLabel(" Carregue as conexões para iniciar. | Limite de visualização: " + ROW_LIMIT + " linhas");
     status.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
     frame.add(toolbar, BorderLayout.NORTH);
     frame.add(horizontal, BorderLayout.CENTER);
@@ -137,7 +168,7 @@ public class Main {
     try {
       configure(configPath);
       rebuildTree();
-      status.setText(" " + SOURCES.size() + " conexÃµes carregadas de " + configPath.getFileName());
+      status.setText(" " + SOURCES.size() + " conexões carregadas de " + configPath.getFileName());
     } catch (Exception ex) { showError(ex); }
   }
 
@@ -170,7 +201,11 @@ public class Main {
       protected void done() {
         node.removeAllChildren();
         try {
-          for (String table : get()) node.add(new DefaultMutableTreeNode(new TableNode(name, table)));
+          for (String table : get()) {
+            DefaultMutableTreeNode tableNode = new DefaultMutableTreeNode(new TableNode(name, table));
+            tableNode.add(new DefaultMutableTreeNode("Expandir para carregar colunas..."));
+            node.add(tableNode);
+          }
           status.setText(" Tabelas de " + name + " carregadas.");
         } catch (Exception ex) { source.loaded = false; node.add(new DefaultMutableTreeNode("Erro: tente expandir novamente")); showError(ex); }
         ((DefaultTreeModel) explorer.getModel()).reload(node);
@@ -179,14 +214,95 @@ public class Main {
     }.execute();
   }
 
+  private static String qualifiedTable(TableNode table) {
+    return table.source + ".\"" + table.table.replace("\"", "\"\"") + "\"";
+  }
+
+  private static void insertTableSql(TableNode table) {
+    JTextArea editor = activeEditor();
+    editor.insert("SELECT * FROM " + qualifiedTable(table) + " FETCH NEXT 100 ROWS ONLY;\n",
+        editor.getCaretPosition());
+    editor.requestFocusInWindow();
+  }
+
+  private static void loadColumns(DefaultMutableTreeNode node, TableNode table) {
+    table.loaded = true;
+    node.removeAllChildren();
+    node.add(new DefaultMutableTreeNode("Carregando colunas..."));
+    ((DefaultTreeModel) explorer.getModel()).reload(node);
+    new SwingWorker<List<String>, Void>() {
+      protected List<String> doInBackground() throws Exception {
+        List<String> columns = new ArrayList<>();
+        try (Connection c = SOURCES.get(table.source).getConnection();
+             ResultSet rs = c.getMetaData().getColumns(c.getCatalog(), null, table.table, "%")) {
+          while (rs.next()) {
+            String name = rs.getString("COLUMN_NAME");
+            String type = rs.getString("TYPE_NAME");
+            int size = rs.getInt("COLUMN_SIZE");
+            columns.add(name + "  :  " + type + (size > 0 ? "(" + size + ")" : ""));
+          }
+        }
+        return columns;
+      }
+      protected void done() {
+        node.removeAllChildren();
+        try {
+          List<String> columns = get();
+          for (String column : columns) node.add(new DefaultMutableTreeNode(column));
+          status.setText(" " + columns.size() + " colunas de " + table.table + ".");
+        } catch (Exception ex) {
+          table.loaded = false;
+          node.add(new DefaultMutableTreeNode("Erro ao carregar colunas"));
+          showError(ex);
+        }
+        ((DefaultTreeModel) explorer.getModel()).reload(node);
+        explorer.expandPath(new TreePath(node.getPath()));
+      }
+    }.execute();
+  }
+
+  // Divide comandos somente em ponto e virgula fora de strings e comentarios.
+  private static String statementAtCaret(JTextArea editor) {
+    String sql = editor.getText();
+    int caret = editor.getCaretPosition();
+    List<int[]> parts = new ArrayList<>();
+    int start = 0;
+    char quote = 0;
+    boolean lineComment = false, blockComment = false;
+    for (int i = 0; i < sql.length(); i++) {
+      char ch = sql.charAt(i);
+      char next = i + 1 < sql.length() ? sql.charAt(i + 1) : 0;
+      if (lineComment) { if (ch == '\n') lineComment = false; continue; }
+      if (blockComment) { if (ch == '*' && next == '/') { blockComment = false; i++; } continue; }
+      if (quote != 0) {
+        if (ch == quote) {
+          if (next == quote) i++;
+          else quote = 0;
+        } else if (ch == '\\' && next != 0) i++;
+        continue;
+      }
+      if (ch == '-' && next == '-' && (i + 2 == sql.length() || Character.isWhitespace(sql.charAt(i + 2)))) { lineComment = true; i++; continue; }
+      if (ch == '#') { lineComment = true; continue; }
+      if (ch == '/' && next == '*') { blockComment = true; i++; continue; }
+      if (ch == '\'' || ch == '"' || ch == '`') { quote = ch; continue; }
+      if (ch == ';') { parts.add(new int[]{start, i + 1}); start = i + 1; }
+    }
+    parts.add(new int[]{start, sql.length()});
+    for (int[] part : parts) {
+      if (caret >= part[0] && caret <= part[1] && !sql.substring(part[0], part[1]).isBlank())
+        return sql.substring(part[0], part[1]);
+    }
+    return "";
+  }
+
   private static void runQuery() {
-    if (federation == null) { status.setText(" Carregue as conexÃµes primeiro."); return; }
+    if (federation == null) { status.setText(" Carregue as conexões primeiro."); return; }
     if (currentQuery != null && !currentQuery.isDone()) return;
     String sql = activeEditor().getSelectedText();
-    if (sql == null || sql.isBlank()) sql = activeEditor().getText();
+    if (sql == null || sql.isBlank()) sql = statementAtCaret(activeEditor());
     sql = sql.trim();
     while (sql.endsWith(";")) sql = sql.substring(0, sql.length() - 1).trim();
-    if (sql.isBlank()) { status.setText(" Digite uma consulta SQL."); return; }
+    if (sql.isBlank()) { status.setText(" Posicione o cursor em uma consulta ou selecione o SQL."); return; }
     final String query = sql;
     execute.setEnabled(false);
     status.setText(" Executando consulta...");
@@ -217,7 +333,7 @@ public class Main {
           DefaultTableModel model = get();
           results.setModel(model);
           configureColumns();
-          status.setText(" Consulta concluÃ­da: " + model.getRowCount() + " linhas (limite: " + ROW_LIMIT + ").");
+          status.setText(" Consulta concluída: " + model.getRowCount() + " linhas (limite: " + ROW_LIMIT + ").");
         } catch (Exception ex) { status.setText(" Falha na consulta."); showError(ex); }
       }
     };
@@ -276,13 +392,13 @@ public class Main {
       String[] labels = new String[list.size()];
       for (int i = 0; i < labels.length; i++) labels[i] = list.get(i).path("name").asText();
       String[] actions = {"Adicionar", "Editar", "Excluir", "Cancelar"};
-      int action = JOptionPane.showOptionDialog(frame, "ConexÃµes configuradas: " + String.join(", ", labels) + "\nArquivo: " + configPath,
-          "Gerenciar conexÃµes", JOptionPane.DEFAULT_OPTION, JOptionPane.PLAIN_MESSAGE, null, actions, actions[0]);
+      int action = JOptionPane.showOptionDialog(frame, "Conexões configuradas: " + String.join(", ", labels) + "\nArquivo: " + configPath,
+          "Gerenciar conexões", JOptionPane.DEFAULT_OPTION, JOptionPane.PLAIN_MESSAGE, null, actions, actions[0]);
       if (action == 3 || action == JOptionPane.CLOSED_OPTION) return;
       int index = -1;
       if (action == 1 || action == 2) {
-        if (labels.length == 0) { JOptionPane.showMessageDialog(frame, "NÃ£o hÃ¡ conexÃµes cadastradas."); return; }
-        Object selected = JOptionPane.showInputDialog(frame, "Selecione a conexÃ£o", "ConexÃµes", JOptionPane.PLAIN_MESSAGE, null, labels, labels[0]);
+        if (labels.length == 0) { JOptionPane.showMessageDialog(frame, "Não há conexões cadastradas."); return; }
+        Object selected = JOptionPane.showInputDialog(frame, "Selecione a conexão", "Conexões", JOptionPane.PLAIN_MESSAGE, null, labels, labels[0]);
         if (selected == null) return;
         for (int i = 0; i < labels.length; i++) if (labels[i].equals(selected)) index = i;
       }
@@ -298,12 +414,12 @@ public class Main {
         JTextField user = new JTextField(previous.path("user").asText("consulta"), 23);
         JTextField env = new JTextField(previous.path("passwordEnv").asText("SQLBRIDGE_MYSQL_PASSWORD"), 23);
         JPanel form = new JPanel(new GridLayout(0, 2, 7, 7));
-        for (Object[] field : new Object[][]{{"Nome", name}, {"Host/IP", host}, {"Porta", port}, {"Banco", database}, {"UsuÃ¡rio", user}, {"VariÃ¡vel de senha", env}}) {
+        for (Object[] field : new Object[][]{{"Nome", name}, {"Host/IP", host}, {"Porta", port}, {"Banco", database}, {"Usuário", user}, {"Variável de senha", env}}) {
           form.add(new JLabel((String) field[0])); form.add((JTextField) field[1]);
         }
-        if (JOptionPane.showConfirmDialog(frame, form, "Dados da conexÃ£o", JOptionPane.OK_CANCEL_OPTION) != JOptionPane.OK_OPTION) return;
+        if (JOptionPane.showConfirmDialog(frame, form, "Dados da conexão", JOptionPane.OK_CANCEL_OPTION) != JOptionPane.OK_OPTION) return;
         if (!name.getText().matches("[A-Za-z][A-Za-z0-9_]*") || host.getText().isBlank() || database.getText().isBlank() || env.getText().isBlank()) {
-          JOptionPane.showMessageDialog(frame, "Preencha os campos obrigatÃ³rios e use nome sem espaÃ§os."); return;
+          JOptionPane.showMessageDialog(frame, "Preencha os campos obrigatórios e use nome sem espaços."); return;
         }
         ObjectNode item = JSON.createObjectNode();
         item.put("name", name.getText().trim()); item.put("host", host.getText().trim());
@@ -313,7 +429,7 @@ public class Main {
       }
       Files.createDirectories(configPath.toAbsolutePath().getParent());
       JSON.writerWithDefaultPrettyPrinter().writeValue(configPath.toFile(), document);
-      status.setText(" ConfiguraÃ§Ã£o salva em " + configPath + ". Clique em Carregar conexÃµes para atualizar.");
+      status.setText(" Configuração salva em " + configPath + ". Clique em Carregar conexões para atualizar.");
     } catch (Exception ex) { showError(ex); }
   }
 
@@ -327,10 +443,10 @@ public class Main {
       for (JsonNode item : root.path("connections")) {
         String name = item.path("name").asText();
         if (!name.matches("[A-Za-z][A-Za-z0-9_]*") || !names.add(name.toUpperCase(Locale.ROOT)))
-          throw new IllegalArgumentException("Nome invÃ¡lido ou duplicado: " + name);
+          throw new IllegalArgumentException("Nome inválido ou duplicado: " + name);
         String passwordEnv = item.path("passwordEnv").asText();
         String password = System.getenv(passwordEnv);
-        if (password == null) throw new IllegalArgumentException("VariÃ¡vel de ambiente ausente: " + passwordEnv);
+        if (password == null) throw new IllegalArgumentException("Variável de ambiente ausente: " + passwordEnv);
         BasicDataSource ds = new BasicDataSource();
         ds.setDriverClassName("com.mysql.cj.jdbc.Driver");
         ds.setUrl("jdbc:mysql://" + item.path("host").asText() + ":" + item.path("port").asInt(4407) + "/" + item.path("database").asText() + "?useSSL=false&connectTimeout=5000&socketTimeout=120000");
@@ -372,8 +488,8 @@ public class Main {
   }
   private static class TableNode {
     final String source, table;
+    boolean loaded;
     TableNode(String source, String table) { this.source = source; this.table = table; }
     public String toString() { return table; }
   }
 }
-

@@ -21,6 +21,8 @@ import javax.swing.event.DocumentListener;
 import javax.swing.event.DocumentEvent;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.table.TableColumn;
+import javax.swing.table.TableRowSorter;
+import javax.swing.RowFilter;
 import javax.swing.tree.*;
 import java.awt.*;
 import java.awt.event.*;
@@ -52,6 +54,11 @@ public class Main {
   private static JTree explorer;
   private static DefaultMutableTreeNode rootNode;
   private static JButton execute;
+  private static JButton cancelQueryButton;
+  private static JTextField resultFilter;
+  private static final java.util.concurrent.atomic.AtomicReference<Statement> RUNNING_STATEMENT = new java.util.concurrent.atomic.AtomicReference<>();
+  private static final java.util.concurrent.atomic.AtomicReference<Connection> RUNNING_CONNECTION = new java.util.concurrent.atomic.AtomicReference<>();
+  private static final java.util.concurrent.atomic.AtomicBoolean CANCEL_REQUESTED = new java.util.concurrent.atomic.AtomicBoolean(false);
   private static SwingWorker<DefaultTableModel, Void> currentQuery;
   private static final Map<Component, Path> OPEN_FILES = new IdentityHashMap<>();
   private static JTextField tableSearch;
@@ -112,7 +119,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 0.9.1");
+    frame = new JFrame("SantySQL Studio - 1.0.1");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -140,6 +147,8 @@ public class Main {
     JButton history = new JButton("Histórico SQL");
     JButton formatSql = new JButton("Formatar SQL");
     execute = new JButton("Executar SQL  (Ctrl+Enter)");
+    cancelQueryButton = new JButton("Cancelar consulta");
+    cancelQueryButton.setEnabled(false);
     JButton clear = new JButton("Limpar grade");
     JButton export = new JButton("Exportar CSV");
     themeButton = new JButton(darkMode ? "☀  Tema claro" : "☾  Tema escuro");
@@ -150,7 +159,7 @@ public class Main {
     execute.setForeground(Color.WHITE);
     // A barra principal fica compacta mesmo na largura minima de 900 px.
     // Todas as acoes continuam disponiveis no menu superior.
-    for (JButton b : new JButton[]{load, newTab, openSql, saveSql, formatSql, execute, export}) toolbar.add(b);
+    for (JButton b : new JButton[]{load, newTab, openSql, saveSql, execute, cancelQueryButton, export}) toolbar.add(b);
 
     JMenuBar menuBar = new JMenuBar();
     JMenu fileMenu = new JMenu("Arquivo");
@@ -162,6 +171,7 @@ public class Main {
 
     JMenu sqlMenu = new JMenu("SQL");
     addMenuAction(sqlMenu, "Executar SQL (Ctrl+Enter)", execute);
+    addMenuAction(sqlMenu, "Cancelar consulta", cancelQueryButton);
     addMenuAction(sqlMenu, "Formatar SQL (Ctrl+Shift+F)", formatSql);
     addMenuAction(sqlMenu, "Historico SQL", history);
     menuBar.add(sqlMenu);
@@ -245,7 +255,21 @@ public class Main {
     resultSummary = new JLabel("  RESULTADOS  ·  Nenhuma consulta executada");
     resultSummary.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
     resultSummary.setBorder(BorderFactory.createEmptyBorder(9, 8, 9, 8));
-    resultPanel.add(resultSummary, BorderLayout.NORTH);
+    resultFilter = new JTextField(23);
+    resultFilter.putClientProperty("JTextField.placeholderText", "Filtrar linhas do resultado selecionado...");
+    resultFilter.setToolTipText("Filtra os dados ja carregados na aba selecionada; nao consulta novamente o servidor.");
+    resultFilter.getDocument().addDocumentListener(new DocumentListener() {
+      public void insertUpdate(DocumentEvent e) { applyResultFilter(); }
+      public void removeUpdate(DocumentEvent e) { applyResultFilter(); }
+      public void changedUpdate(DocumentEvent e) { applyResultFilter(); }
+    });
+    JPanel resultHeader = new JPanel(new BorderLayout(8, 0));
+    resultHeader.add(resultSummary, BorderLayout.CENTER);
+    JPanel resultTools = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 3));
+    resultTools.add(new JLabel("Filtro:"));
+    resultTools.add(resultFilter);
+    resultHeader.add(resultTools, BorderLayout.EAST);
+    resultPanel.add(resultHeader, BorderLayout.NORTH);
     resultPanel.add(resultTabs, BorderLayout.CENTER);
     JSplitPane vertical = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tabs, resultPanel);
     vertical.setResizeWeight(.48);
@@ -280,6 +304,7 @@ public class Main {
     history.addActionListener(e -> showHistory());
     formatSql.addActionListener(e -> formatActiveSql());
     execute.addActionListener(e -> runQuery());
+    cancelQueryButton.addActionListener(e -> cancelRunningQuery());
     clear.addActionListener(e -> clearSelectedResult());
     export.addActionListener(e -> exportCsv());
     themeButton.addActionListener(e -> toggleTheme());
@@ -942,7 +967,59 @@ public class Main {
     table.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 13));
     table.getTableHeader().setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
     table.getTableHeader().setReorderingAllowed(true);
+    table.setRowSorter(new TableRowSorter<>(model));
     return table;
+  }
+
+  private static void applyResultFilter() {
+    if (results == null || resultFilter == null) return;
+    @SuppressWarnings("unchecked")
+    TableRowSorter<DefaultTableModel> sorter = (TableRowSorter<DefaultTableModel>) results.getRowSorter();
+    String value = resultFilter.getText().trim();
+    sorter.setRowFilter(value.isEmpty() ? null : RowFilter.regexFilter("(?iu)" + java.util.regex.Pattern.quote(value)));
+    Component tab = resultTabs.getSelectedComponent();
+    if (tab instanceof JComponent component) component.putClientProperty("resultFilter", value);
+    status.setText(" Filtro local: " + results.getRowCount() + " de " + results.getModel().getRowCount() + " linhas exibidas.");
+  }
+
+  private static Connection openQueryConnection() throws SQLException {
+    Connection connection = DriverManager.getConnection("jdbc:calcite:caseSensitive=false");
+    try {
+      SchemaPlus schemas = connection.unwrap(CalciteConnection.class).getRootSchema();
+      synchronized (Main.class) {
+        for (Map.Entry<String, BasicDataSource> source : SOURCES.entrySet()) {
+          schemas.add(source.getKey(), JdbcSchema.create(schemas, source.getKey(), source.getValue(), null, null));
+        }
+      }
+      return connection;
+    } catch (Exception ex) {
+      try { connection.close(); } catch (SQLException ignored) {}
+      if (ex instanceof SQLException sqlEx) throw sqlEx;
+      throw new SQLException("Falha ao preparar conexao federada da consulta", ex);
+    }
+  }
+
+  private static void cancelRunningQuery() {
+    SwingWorker<DefaultTableModel, Void> worker = currentQuery;
+    if (worker == null || worker.isDone()) return;
+    CANCEL_REQUESTED.set(true);
+    cancelQueryButton.setEnabled(false);
+    status.setText(" Cancelamento solicitado. Liberando editor para nova consulta...");
+    Statement stmt = RUNNING_STATEMENT.get();
+    Connection conn = RUNNING_CONNECTION.get();
+    // O worker e cancelado para liberar a interface. Sua conexao e exclusiva:
+    // uma nova consulta nao reutiliza a conexao que ainda esta encerrando.
+    worker.cancel(true);
+    Thread canceller = new Thread(() -> {
+      if (stmt != null) {
+        try { stmt.cancel(); } catch (SQLException ignored) {}
+      }
+      if (conn != null) {
+        try { conn.close(); } catch (SQLException ignored) {}
+      }
+    }, "santysql-cancel-query");
+    canceller.setDaemon(true);
+    canceller.start();
   }
 
   private static void selectResultTab() {
@@ -951,8 +1028,13 @@ public class Main {
       results = table;
       Object summary = scroll.getClientProperty("resultSummary");
       resultSummary.setText(summary == null ? "  RESULTADOS" : summary.toString());
+      if (resultFilter != null) {
+        resultFilter.setEnabled(true);
+        resultFilter.setText(String.valueOf(scroll.getClientProperty("resultFilter") == null ? "" : scroll.getClientProperty("resultFilter")));
+      }
     } else {
       results = null;
+      if (resultFilter != null) { resultFilter.setText(""); resultFilter.setEnabled(false); }
       resultSummary.setText("  RESULTADOS  ·  Nenhuma consulta executada");
     }
   }
@@ -1072,11 +1154,22 @@ public class Main {
     final String query = sql;
     rememberQuery(query);
     execute.setEnabled(false);
+    cancelQueryButton.setEnabled(true);
+    CANCEL_REQUESTED.set(false);
     final long started = System.nanoTime();
     status.setText(" Executando consulta... Os resultados anteriores serao preservados.");
     currentQuery = new SwingWorker<>() {
       protected DefaultTableModel doInBackground() throws Exception {
-        try (Statement stmt = federation.createStatement()) {
+        Connection queryConnection = null;
+        Statement stmt = null;
+        try {
+          queryConnection = openQueryConnection();
+          stmt = queryConnection.createStatement();
+          if (currentQuery == this) {
+            RUNNING_CONNECTION.set(queryConnection);
+            RUNNING_STATEMENT.set(stmt);
+          }
+          if (isCancelled()) throw new java.util.concurrent.CancellationException("Consulta cancelada");
           stmt.setMaxRows(ROW_LIMIT);
           stmt.setQueryTimeout(120);
           try (ResultSet rs = stmt.executeQuery(query)) {
@@ -1086,23 +1179,38 @@ public class Main {
             DefaultTableModel model = new DefaultTableModel(headers, 0) {
               public boolean isCellEditable(int row, int col) { return false; }
             };
-            while (rs.next() && model.getRowCount() < ROW_LIMIT) {
+            while (!Thread.currentThread().isInterrupted() && !isCancelled() && rs.next() && model.getRowCount() < ROW_LIMIT) {
               Object[] row = new Object[headers.length];
               for (int i = 0; i < row.length; i++) row[i] = rs.getObject(i + 1);
               model.addRow(row);
             }
+            if (isCancelled() || Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("Consulta cancelada");
             return model;
+          }
+        } finally {
+          RUNNING_STATEMENT.compareAndSet(stmt, null);
+          RUNNING_CONNECTION.compareAndSet(queryConnection, null);
+          if (stmt != null) {
+            try { stmt.close(); } catch (SQLException ignored) {}
+          }
+          if (queryConnection != null) {
+            try { queryConnection.close(); } catch (SQLException ignored) {}
           }
         }
       }
       protected void done() {
+        if (currentQuery != this) return;
         execute.setEnabled(true);
+        cancelQueryButton.setEnabled(false);
         try {
           DefaultTableModel model = get();
           double elapsed = (System.nanoTime() - started) / 1_000_000_000.0;
           addResultTab(model, elapsed);
           status.setText(" Consulta concluída: " + model.getRowCount() + " linhas (limite: " + ROW_LIMIT + ").");
-        } catch (Exception ex) { status.setText(" Falha na consulta. Resultados anteriores preservados."); showError(ex); }
+        } catch (Exception ex) {
+          if (CANCEL_REQUESTED.get()) status.setText(" Consulta cancelada. Resultados anteriores preservados.");
+          else { status.setText(" Falha na consulta. Resultados anteriores preservados."); showError(ex); }
+        }
       }
     };
     currentQuery.execute();

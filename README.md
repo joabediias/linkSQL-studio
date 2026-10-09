@@ -1,45 +1,41 @@
-# SQLBridge Studio — Protótipo 0.1
+# SantySQL Studio 0.3
 
-**Estado:** código inicial para validação; não é um servidor SQL e **ainda não conecta ao SantySQL**.
+Protótipo Java 17 + Apache Calcite, para consultas federadas MySQL.
 
-## Objetivo
+## Iniciar no Windows
 
-Executar SQL federado entre instâncias MySQL existentes, sem importar os registros, usando Apache Calcite e um editor Swing mínimo. Testar em máquina de desenvolvimento antes de implantar na VM de 4 GB.
+Abra o PowerShell na pasta que contém `pom.xml`:
 
-## Requisitos
-
-- Windows 10/11, JDK 17, Apache Maven 3.9+ e acesso aos MySQL.
-- Credenciais de usuário MySQL com permissão somente leitura.
-- O primeiro teste pressupõe um único banco/schema MySQL por conexão virtual. Para acessar múltiplos schemas no mesmo servidor, cadastre uma conexão virtual por schema.
-
-## Preparar
-
-1. Copie `config/connections.example.json` para `config/connections.json` e preencha o nome real de cada schema MySQL. Os endereços de ARRAIAL e MATRIZ são apenas os dois servidores iniciais.
-2. Abra o PowerShell **na pasta do projeto** e defina a senha da sessão: `$env:SQLBRIDGE_MYSQL_PASSWORD = Read-Host 'Senha MySQL'` (o Read-Host simples devolve texto). Não salve senha no arquivo JSON nem no repositório.
-3. Execute `mvn -q compile exec:java`.
-4. Clique em **Carregar conexões** e selecione `config/connections.json`.
-5. Substitua `SUA_TABELA` por uma tabela real e execute uma consulta de teste.
-
-## SQL de teste
-
-```sql
-SELECT 'ARRAIAL' AS ORIGEM, t.CODIGO
-FROM SRV_ARRAIAL.SUA_TABELA t
-UNION ALL
-SELECT 'MATRIZ' AS ORIGEM, t.CODIGO
-FROM SRV_MATRIZ.SUA_TABELA t
+```powershell
+$env:SQLBRIDGE_MYSQL_PASSWORD = Read-Host "Senha MySQL"
+mvn clean compile exec:java
 ```
 
-A sintaxe depende dos metadados e da versão do Calcite; a consulta acima é um exemplo, não um teste já validado contra seus bancos.
+Clique em **Carregar conexões** e selecione `config/connections.example.json` (edite-o conforme seu ambiente). As senhas **não** são salvas no JSON: `passwordEnv` contém o nome da variável de ambiente.
 
-## Limitações atuais
+## Recursos 0.3
 
-- Não implementa protocolo PostgreSQL, ODBC ou servidor JDBC remoto. **SantySQL não está integrado nesta versão.**
-- Exibe no máximo 1.000 linhas por consulta e não exporta CSV ainda.
-- Consultas distribuídas com JOIN/ORDER BY podem consumir memória significativa; esta versão não implementa spill para disco nem limites rígidos por operador.
-- A configuração usa `useSSL=false` apenas para teste em rede interna; produção requer configuração TLS adequada.
-- O projeto ainda precisa de build, testes reais, diagnóstico de SQL e validação de desempenho. Não execute consultas pesadas em produção sem avaliar o plano e o impacto.
+- Navegador de conexões e tabelas à esquerda. Expanda uma conexão para carregar tabelas; dê dois cliques em uma tabela para inserir um SELECT no editor.
+- Gerenciador básico de conexões (adicionar, editar e excluir no JSON). Após salvar, recarregue as conexões.
+- Editor com várias abas e Ctrl+Enter; executa a seleção de texto quando houver.
+- Grade de resultados com rolagem horizontal, colunas redimensionáveis e ordenação local.
+- Exportação CSV com separador `;`, UTF-8 BOM e apenas as linhas atualmente carregadas (máximo 1.000).
+- Consultas federadas `UNION ALL` e consultas simples via Apache Calcite.
 
-## Próxima entrega
+Exemplo:
 
-Validar consultas entre duas fontes, escolher um gateway PostgreSQL-wire compatível e comprovar conexão do SantySQL antes de investir na interface completa.
+```sql
+SELECT 'ARRAIAL' AS ORIGEM, cu.* FROM SRV_ARRAIAL.cad_usu0 cu
+UNION ALL
+SELECT 'MATRIZ' AS ORIGEM, cu.* FROM SRV_MATRIZ.cad_usu0 cu;
+```
+
+## Limitações importantes
+
+- Apenas SELECT; uma instrução por execução. A execução de JOIN entre servidores e grandes volumes exige testes de desempenho e memória.
+- O limite de 1.000 linhas é de visualização, **não** garante que o banco ou Calcite deixem de processar mais linhas.
+- Exportação CSV exporta somente a grade atual; não exporta milhões de registros em streaming.
+- A opção de gerenciar conexões não testa o acesso antes de salvar. A conexão é validada ao carregar tabelas ou executar consultas.
+- O protótipo não fornece servidor de protocolo PostgreSQL para conexão do SantySQL 5.3.7.
+- `useSSL=false` foi mantido para compatibilidade com o ambiente de teste; revisar TLS antes de produção.
+- Evite compartilhar o JSON com dados internos dos servidores sem necessidade.

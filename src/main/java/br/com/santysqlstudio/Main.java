@@ -57,6 +57,10 @@ public class Main {
   private static JButton cancelQueryButton;
   private static JTextField resultFilter;
   private static JComboBox<String> resultFilterColumn;
+  private static JButton previousPageButton;
+  private static JButton nextPageButton;
+  private static JLabel pageLabel;
+  private static final int PAGE_SIZE = 1000;
   private static boolean changingResultTab = false;
   private static final java.util.concurrent.atomic.AtomicReference<Statement> RUNNING_STATEMENT = new java.util.concurrent.atomic.AtomicReference<>();
   private static final java.util.concurrent.atomic.AtomicReference<Connection> RUNNING_CONNECTION = new java.util.concurrent.atomic.AtomicReference<>();
@@ -126,7 +130,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 1.4.2");
+    frame = new JFrame("SantySQL Studio - 1.5.1");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -305,6 +309,17 @@ public class Main {
     resultHeader.add(resultTools, BorderLayout.EAST);
     resultPanel.add(resultHeader, BorderLayout.NORTH);
     resultPanel.add(resultTabs, BorderLayout.CENTER);
+    JPanel paging = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 3));
+    previousPageButton = new JButton("◀ Anterior");
+    nextPageButton = new JButton("Próxima ▶");
+    pageLabel = new JLabel("Página 1");
+    previousPageButton.addActionListener(e -> changeResultPage(-1));
+    nextPageButton.addActionListener(e -> changeResultPage(1));
+    paging.add(previousPageButton);
+    paging.add(pageLabel);
+    paging.add(nextPageButton);
+    resultHeader.add(paging, BorderLayout.SOUTH);
+    updatePageControls();
     JSplitPane vertical = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tabs, resultPanel);
     vertical.setResizeWeight(.48);
     JPanel explorerPanel = new JPanel(new BorderLayout(0, 4));
@@ -1329,6 +1344,7 @@ public class Main {
       }
     } finally { changingResultTab = false; }
     if (results != null) applyResultFilter();
+    updatePageControls();
   }
 
   private static void clearSelectedResult() {
@@ -1349,40 +1365,165 @@ public class Main {
     int index = resultTabs.indexOfComponent(scroll);
     resultTabs.setTabComponentAt(index, resultTabHeader(title, scroll));
     resultTabs.setSelectedComponent(scroll);
+    scroll.putClientProperty("resultPage", 0);
+    scroll.putClientProperty("resultHasMore", false);
     configureColumns(table);
+    updatePageControls();
   }
 
-  // Reutiliza a aba da mesma consulta e da mesma aba SQL; outras consultas permanecem intactas.
-  private static void showOrUpdateResultTab(DefaultTableModel model, double elapsed, Component sqlTab, String sql) {
-    String key = sql.trim();
-    for (int i = 0; i < resultTabs.getTabCount(); i++) {
-      Component component = resultTabs.getComponentAt(i);
-      if (!(component instanceof JScrollPane scroll)) continue;
-      if (scroll.getClientProperty("sqlSourceTab") != sqlTab ||
-          !key.equals(scroll.getClientProperty("sqlQueryKey"))) continue;
+  // A aba de resultado representa a posicao do SELECT na execucao, nao o texto SQL.
+  private static void showOrUpdateResultTab(DefaultTableModel model, double elapsed, Component sqlTab, String sql, int slot) {
+    JScrollPane scroll;
+    if (slot < resultTabs.getTabCount() && resultTabs.getComponentAt(slot) instanceof JScrollPane existing) {
+      scroll = existing;
+    } else {
       JTable table = newResultTable(model);
-      scroll.setViewportView(table);
-      scroll.putClientProperty("resultSummary", String.format(Locale.ROOT,
-          "  RESULTADOS  ·  %,d linhas  ·  %.2f s", model.getRowCount(), elapsed));
-      scroll.putClientProperty("resultFilter", "");
-      scroll.putClientProperty("resultFilterColumn", 0);
-      String oldTitle = resultTabs.getTitleAt(i);
-      int suffix = oldTitle.lastIndexOf(" (");
-      String prefix = suffix >= 0 && oldTitle.endsWith(")") ? oldTitle.substring(0, suffix) : oldTitle;
-      String title = prefix + " (" + model.getRowCount() + ")";
-      resultTabs.setTitleAt(i, title);
-      resultTabs.setTabComponentAt(i, resultTabHeader(title, scroll));
-      resultTabs.setSelectedIndex(i);
-      configureColumns(table);
-      selectResultTab();
+      scroll = new JScrollPane(table);
+      resultTabs.addTab("Resultado " + (slot + 1), scroll);
+    }
+    JTable table = newResultTable(model);
+    scroll.setViewportView(table);
+    scroll.putClientProperty("resultSummary", String.format(Locale.ROOT,
+        "  RESULTADOS  ·  %,d linhas  ·  %.2f s", model.getRowCount(), elapsed));
+    scroll.putClientProperty("resultFilter", "");
+    scroll.putClientProperty("resultFilterColumn", 0);
+    scroll.putClientProperty("sqlSourceTab", sqlTab);
+    scroll.putClientProperty("sqlQueryKey", sql.trim());
+    scroll.putClientProperty("resultPage", 0);
+    scroll.putClientProperty("resultHasMore", model.getRowCount() == PAGE_SIZE && isPageableSql(sql));
+    String title = "Resultado " + (slot + 1) + " (" + model.getRowCount() + ")";
+    int idx = resultTabs.indexOfComponent(scroll);
+    resultTabs.setTitleAt(idx, title);
+    resultTabs.setTabComponentAt(idx, resultTabHeader(title, scroll));
+    resultTabs.setSelectedIndex(idx);
+    configureColumns(table);
+    selectResultTab();
+  }
+
+  private static boolean isPageableSql(String sql) {
+    String normalized = sql.stripLeading().toUpperCase(Locale.ROOT);
+    return (normalized.startsWith("SELECT ") || normalized.startsWith("WITH "))
+        && !normalized.matches("(?s).*\\b(?:FETCH\\s+(?:FIRST|NEXT)|LIMIT|OFFSET)\\b.*");
+  }
+
+  private static void trimResultTabs(int count) {
+    while (resultTabs.getTabCount() > count) resultTabs.removeTabAt(resultTabs.getTabCount() - 1);
+    selectResultTab();
+  }
+
+  // Paginacao sob demanda: cada pagina executa SQL no servidor, sem armazenar as demais.
+  private static void updatePageControls() {
+    if (previousPageButton == null || nextPageButton == null || pageLabel == null) return;
+    Component selected = resultTabs == null ? null : resultTabs.getSelectedComponent();
+    if (!(selected instanceof JScrollPane scroll)) {
+      previousPageButton.setEnabled(false);
+      nextPageButton.setEnabled(false);
+      pageLabel.setText("Nenhum resultado");
       return;
     }
-    addResultTab(model, elapsed);
-    Component created = resultTabs.getSelectedComponent();
-    if (created instanceof JScrollPane scroll) {
-      scroll.putClientProperty("sqlSourceTab", sqlTab);
-      scroll.putClientProperty("sqlQueryKey", key);
-    }
+    Object value = scroll.getClientProperty("resultPage");
+    int page = value instanceof Integer ? (Integer) value : 0;
+    boolean pagingSupported = scroll.getClientProperty("sqlQueryKey") instanceof String sql && isPageableSql(sql);
+    boolean busy = currentQuery != null && !currentQuery.isDone();
+    previousPageButton.setEnabled(pagingSupported && page > 0 && !busy);
+    nextPageButton.setEnabled(pagingSupported && Boolean.TRUE.equals(scroll.getClientProperty("resultHasMore")) && !busy);
+    pageLabel.setText("Página " + (page + 1) + " · " + PAGE_SIZE + " linhas/página");
+  }
+
+  private static void changeResultPage(int direction) {
+    Component selected = resultTabs.getSelectedComponent();
+    if (!(selected instanceof JScrollPane scroll)) return;
+    if (currentQuery != null && !currentQuery.isDone()) return;
+    Object original = scroll.getClientProperty("sqlQueryKey");
+    if (!(original instanceof String sql) || sql.isBlank() || !isPageableSql(sql)) return;
+    int current = scroll.getClientProperty("resultPage") instanceof Integer
+        ? (Integer) scroll.getClientProperty("resultPage") : 0;
+    int target = current + direction;
+    if (target < 0 || (direction > 0 && !Boolean.TRUE.equals(scroll.getClientProperty("resultHasMore")))) return;
+    // A consulta original e encapsulada para preservar WHERE, ORDER BY e limites declarados.
+    String pagedSql = "SELECT * FROM (" + sql + ") AS SANTYSQL_PAGE "
+        + "OFFSET " + ((long) target * PAGE_SIZE) + " ROWS FETCH NEXT " + PAGE_SIZE + " ROWS ONLY";
+    execute.setEnabled(false);
+    executeScriptButton.setEnabled(false);
+    cancelQueryButton.setEnabled(true);
+    CANCEL_REQUESTED.set(false);
+    updatePageControls();
+    status.setText(" Carregando página " + (target + 1) + "...");
+    long started = System.nanoTime();
+    currentQuery = new SwingWorker<DefaultTableModel, Void>() {
+      protected DefaultTableModel doInBackground() throws Exception {
+        Connection conn = null;
+        Statement stmt = null;
+        try {
+          conn = openQueryConnection();
+          stmt = conn.createStatement();
+          RUNNING_CONNECTION.set(conn);
+          RUNNING_STATEMENT.set(stmt);
+          stmt.setMaxRows(PAGE_SIZE);
+          stmt.setQueryTimeout(120);
+          try (ResultSet rs = stmt.executeQuery(pagedSql)) {
+            ResultSetMetaData meta = rs.getMetaData();
+            String[] columns = new String[meta.getColumnCount()];
+            for (int i = 0; i < columns.length; i++) columns[i] = meta.getColumnLabel(i + 1);
+            DefaultTableModel model = new DefaultTableModel(columns, 0) {
+              public boolean isCellEditable(int row, int col) { return false; }
+            };
+            while (!isCancelled() && !Thread.currentThread().isInterrupted()
+                && rs.next() && model.getRowCount() < PAGE_SIZE) {
+              Object[] row = new Object[columns.length];
+              for (int i = 0; i < row.length; i++) row[i] = rs.getObject(i + 1);
+              model.addRow(row);
+            }
+            if (isCancelled()) throw new java.util.concurrent.CancellationException();
+            return model;
+          }
+        } finally {
+          RUNNING_STATEMENT.compareAndSet(stmt, null);
+          RUNNING_CONNECTION.compareAndSet(conn, null);
+          if (stmt != null) try { stmt.close(); } catch (SQLException ignored) {}
+          if (conn != null) try { conn.close(); } catch (SQLException ignored) {}
+        }
+      }
+      protected void done() {
+        if (currentQuery != this) return;
+        execute.setEnabled(true);
+        executeScriptButton.setEnabled(true);
+        cancelQueryButton.setEnabled(false);
+        try {
+          DefaultTableModel model = get();
+          if (resultTabs.indexOfComponent(scroll) < 0) return;
+          if (target > 0 && model.getRowCount() == 0) {
+            scroll.putClientProperty("resultHasMore", false);
+            status.setText(" Não há mais registros após a página " + (current + 1) + ".");
+            return;
+          }
+          JTable table = newResultTable(model);
+          scroll.setViewportView(table);
+          scroll.putClientProperty("resultPage", target);
+          scroll.putClientProperty("resultHasMore", model.getRowCount() == PAGE_SIZE);
+          scroll.putClientProperty("resultFilter", "");
+          scroll.putClientProperty("resultFilterColumn", 0);
+          double seconds = (System.nanoTime() - started) / 1_000_000_000.0;
+          scroll.putClientProperty("resultSummary", String.format(Locale.ROOT,
+              "  RESULTADOS · Página %d · %,d linhas · %.2f s", target + 1, model.getRowCount(), seconds));
+          String oldTitle = resultTabs.getTitleAt(resultTabs.indexOfComponent(scroll));
+          int suffix = oldTitle.lastIndexOf(" (");
+          String prefix = suffix >= 0 && oldTitle.endsWith(")") ? oldTitle.substring(0, suffix) : oldTitle;
+          String title = prefix + " (" + model.getRowCount() + ")";
+          int idx = resultTabs.indexOfComponent(scroll);
+          resultTabs.setTitleAt(idx, title);
+          resultTabs.setTabComponentAt(idx, resultTabHeader(title, scroll));
+          configureColumns(table);
+          if (resultTabs.getSelectedComponent() == scroll) selectResultTab();
+          status.setText(" Página " + (target + 1) + " carregada.");
+        } catch (Exception ex) {
+          if (CANCEL_REQUESTED.get()) status.setText(" Paginação cancelada.");
+          else { status.setText(" Erro ao carregar página. Resultado anterior preservado."); showError(ex); }
+        } finally { updatePageControls(); }
+      }
+    };
+    currentQuery.execute();
+    updatePageControls();
   }
 
   private static Component resultTabHeader(String title, Component content) {
@@ -1533,7 +1674,8 @@ public class Main {
         try {
           DefaultTableModel model = get();
           double elapsed = (System.nanoTime() - started) / 1_000_000_000.0;
-          showOrUpdateResultTab(model, elapsed, sqlTab, query);
+          showOrUpdateResultTab(model, elapsed, sqlTab, query, 0);
+          trimResultTabs(1);
           status.setText(" Consulta concluída: " + model.getRowCount() + " linhas (limite: " + ROW_LIMIT + ").");
         } catch (Exception ex) {
           if (CANCEL_REQUESTED.get()) status.setText(" Consulta cancelada. Resultados anteriores preservados.");
@@ -1593,6 +1735,7 @@ public class Main {
     status.setText(" Executando script: " + commands.size() + " comando(s)...");
     final Component sqlTab = tabs.getSelectedComponent();
     currentQuery = new SwingWorker<Void, ScriptResult>() {
+      private int resultSlot = 0;
       protected Void doInBackground() throws Exception {
         for (int index = 0; index < commands.size(); index++) {
           if (isCancelled() || Thread.currentThread().isInterrupted()) break;
@@ -1639,7 +1782,7 @@ public class Main {
       }
       protected void process(List<ScriptResult> chunks) {
         for (ScriptResult result : chunks) {
-          if (result.model() != null) showOrUpdateResultTab(result.model(), result.elapsed(), sqlTab, commands.get(result.index() - 1));
+          if (result.model() != null) showOrUpdateResultTab(result.model(), result.elapsed(), sqlTab, commands.get(result.index() - 1), resultSlot++);
           status.setText(" Script: comando " + result.index() + "/" + commands.size() +
               (result.model() != null ? " - " + result.model().getRowCount() + " linha(s)." :
                   " - " + result.updated() + " registro(s) afetado(s)."));
@@ -1651,7 +1794,7 @@ public class Main {
         executeScriptButton.setEnabled(true);
         cancelQueryButton.setEnabled(false);
         if (CANCEL_REQUESTED.get()) { status.setText(" Script cancelado. Resultados concluidos preservados."); return; }
-        try { get(); status.setText(" Script concluido: " + commands.size() + " comando(s)."); }
+        try { get(); trimResultTabs(resultSlot); status.setText(" Script concluido: " + commands.size() + " comando(s)."); }
         catch (Exception ex) { status.setText(" Script interrompido por erro. Resultados anteriores preservados."); showError(ex); }
       }
     };

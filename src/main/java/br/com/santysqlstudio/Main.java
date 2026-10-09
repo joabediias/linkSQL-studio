@@ -52,6 +52,12 @@ public class Main {
   private static SwingWorker<DefaultTableModel, Void> currentQuery;
   private static final Map<Component, Path> OPEN_FILES = new IdentityHashMap<>();
   private static JTextField tableSearch;
+  // Cache de metadados: consultas JDBC executadas fora da thread da interface.
+  private static final Map<String, List<String>> TABLE_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
+  private static final Map<String, List<String>> COLUMN_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
+  private static final Set<String> TABLE_LOADING = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  private static final Set<String> COLUMN_LOADING = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
   private static final String[] SQL_WORDS = {"SELECT", "FROM", "WHERE", "JOIN", "LEFT JOIN", "RIGHT JOIN", "INNER JOIN", "ON", "GROUP BY", "ORDER BY", "HAVING", "LIMIT", "UNION ALL", "DISTINCT", "AS", "AND", "OR", "NOT", "IS NULL", "IN", "EXISTS", "WITH", "CASE", "WHEN", "THEN", "ELSE", "END", "COUNT", "SUM", "AVG", "MIN", "MAX", "FETCH NEXT", "ROWS ONLY"};
 
   public static void main(String[] args) {
@@ -99,7 +105,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 0.6");
+    frame = new JFrame("SantySQL Studio - 0.6.2");
     frame.setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
     frame.setSize(1360, 840);
     frame.setMinimumSize(new Dimension(900, 600));
@@ -318,30 +324,129 @@ public class Main {
     status.setText(" Busca: " + matches.size() + " tabela(s) encontrada(s). Pressione Enter para a próxima.");
   }
 
+  private static String resolveSource(String name) {
+    for (String source : SOURCES.keySet()) if (source.equalsIgnoreCase(name)) return source;
+    return null;
+  }
+
+  private static void fetchTables(String source, Runnable onLoaded) {
+    if (source == null || TABLE_CACHE.containsKey(source) || !TABLE_LOADING.add(source)) return;
+    BasicDataSource ds = SOURCES.get(source);
+    if (ds == null) { TABLE_LOADING.remove(source); return; }
+    new SwingWorker<List<String>, Void>() {
+      protected List<String> doInBackground() throws Exception {
+        List<String> names = new ArrayList<>();
+        try (Connection c = ds.getConnection();
+             ResultSet rs = c.getMetaData().getTables(c.getCatalog(), null, "%", new String[]{"TABLE", "VIEW"})) {
+          while (rs.next()) names.add(rs.getString("TABLE_NAME"));
+        }
+        names.sort(String.CASE_INSENSITIVE_ORDER);
+        return names;
+      }
+      protected void done() {
+        TABLE_LOADING.remove(source);
+        try {
+          if (SOURCES.get(source) != ds) return; // Conexao substituida durante o carregamento.
+          TABLE_CACHE.put(source, get());
+          if (onLoaded != null) onLoaded.run();
+        } catch (Exception ex) { status.setText(" Não foi possível carregar tabelas de " + source + ": " + ex.getMessage()); }
+      }
+    }.execute();
+  }
+
+  private static void fetchColumns(String source, String table, Runnable onLoaded) {
+    String key = source + "." + table;
+    if (COLUMN_CACHE.containsKey(key) || !COLUMN_LOADING.add(key)) return;
+    BasicDataSource ds = SOURCES.get(source);
+    if (ds == null) { COLUMN_LOADING.remove(key); return; }
+    new SwingWorker<List<String>, Void>() {
+      protected List<String> doInBackground() throws Exception {
+        List<String> names = new ArrayList<>();
+        try (Connection c = ds.getConnection();
+             ResultSet rs = c.getMetaData().getColumns(c.getCatalog(), null, table, "%")) {
+          while (rs.next()) names.add(rs.getString("COLUMN_NAME"));
+        }
+        return names;
+      }
+      protected void done() {
+        COLUMN_LOADING.remove(key);
+        try {
+          if (SOURCES.get(source) != ds) return;
+          COLUMN_CACHE.put(key, get());
+          if (onLoaded != null) onLoaded.run();
+        } catch (Exception ex) { status.setText(" Não foi possível carregar colunas de " + key + ": " + ex.getMessage()); }
+      }
+    }.execute();
+  }
+
   private static void showCompletions(RSyntaxTextArea editor) {
+    showCompletions(editor, true);
+  }
+
+  private static void showCompletions(RSyntaxTextArea editor, boolean allowLoad) {
     int caret = editor.getCaretPosition();
     String before = editor.getText().substring(0, caret);
     int start = caret;
     while (start > 0 && (Character.isLetterOrDigit(before.charAt(start - 1)) || before.charAt(start - 1) == '_')) start--;
     String prefix = before.substring(start).toLowerCase(Locale.ROOT);
+    String left = before.substring(0, start);
+    java.util.regex.Matcher sourceMatcher = java.util.regex.Pattern.compile("(?i)([a-z][a-z0-9_]*)\\.\\s*$").matcher(left);
+    String source = sourceMatcher.find() ? resolveSource(sourceMatcher.group(1)) : null;
+    boolean afterDot = source != null;
     Set<String> candidates = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
-    Collections.addAll(candidates, SQL_WORDS);
-    DefaultMutableTreeNode root = (DefaultMutableTreeNode) explorer.getModel().getRoot();
-    Enumeration<?> nodes = root.depthFirstEnumeration();
-    while (nodes.hasMoreElements()) {
-      Object item = ((DefaultMutableTreeNode) nodes.nextElement()).getUserObject();
-      if (item instanceof SourceNode source) candidates.add(source.name);
-      if (item instanceof TableNode table) { candidates.add(table.table); candidates.add(table.source + "." + table.table); }
-      if (item instanceof String column && column.contains("  :  ")) candidates.add(column.substring(0, column.indexOf("  :  ")));
+
+    if (afterDot) {
+      List<String> tables = TABLE_CACHE.get(source);
+      if (tables == null) {
+        if (allowLoad) {
+          status.setText(" Carregando tabelas de " + source + " para autocompletar...");
+          int originalCaret = caret;
+          fetchTables(source, null);
+          javax.swing.Timer retry = new javax.swing.Timer(250, null);
+          final int[] attempts = {0};
+          retry.addActionListener(event -> {
+            if (!editor.isShowing() || editor.getCaretPosition() != originalCaret || ++attempts[0] > 24) {
+              retry.stop();
+            } else if (TABLE_CACHE.containsKey(source)) {
+              retry.stop();
+              showCompletions(editor, false);
+            } else if (!TABLE_LOADING.contains(source)) {
+              retry.stop();
+              status.setText(" Não foi possível obter tabelas de " + source + ".");
+            }
+          });
+          retry.start();
+        }
+        return;
+      }
+      candidates.addAll(tables);
+    } else {
+      Collections.addAll(candidates, SQL_WORDS);
+      candidates.addAll(SOURCES.keySet());
+      for (List<String> tables : TABLE_CACHE.values()) candidates.addAll(tables);
+      if (allowLoad) for (String server : SOURCES.keySet()) fetchTables(server, null);
+
+      // Sugestao de colunas a partir de tabelas explicitamente citadas na consulta.
+      java.util.regex.Matcher tablesInSql = java.util.regex.Pattern.compile(
+          "(?i)\\b(?:FROM|JOIN)\\s+([a-z][a-z0-9_]*)\\.\\\"?([a-z0-9_]+)\\\"?").matcher(before);
+      while (tablesInSql.find()) {
+        String server = resolveSource(tablesInSql.group(1));
+        if (server == null) continue;
+        String table = tablesInSql.group(2);
+        String key = server + "." + table;
+        List<String> columns = COLUMN_CACHE.get(key);
+        if (columns != null) candidates.addAll(columns);
+        else if (allowLoad) fetchColumns(server, table, null);
+      }
     }
-    // Lista rolavel e compacta, sem ocupar toda a altura da tela.
+
     java.util.List<String> matches = new ArrayList<>();
     for (String candidate : candidates) {
       if (candidate.toLowerCase(Locale.ROOT).startsWith(prefix)) matches.add(candidate);
       if (matches.size() >= 100) break;
     }
     if (matches.isEmpty()) {
-      status.setText(" Nenhuma sugestão encontrada. Expanda tabelas para carregar seus nomes e colunas.");
+      status.setText(" Nenhuma sugestão encontrada para '" + prefix + "'.");
       return;
     }
     final int replaceStart = start;
@@ -406,6 +511,7 @@ public class Main {
     try {
       configure(configPath);
       rebuildTree();
+      for (String server : SOURCES.keySet()) fetchTables(server, null);
       status.setText(" " + SOURCES.size() + " conexões carregadas de " + configPath.getFileName());
     } catch (Exception ex) { showError(ex); }
   }
@@ -439,7 +545,9 @@ public class Main {
       protected void done() {
         node.removeAllChildren();
         try {
-          for (String table : get()) {
+          List<String> loadedTables = get();
+          TABLE_CACHE.put(name, loadedTables);
+          for (String table : loadedTables) {
             DefaultMutableTreeNode tableNode = new DefaultMutableTreeNode(new TableNode(name, table));
             tableNode.add(new DefaultMutableTreeNode("Expandir para carregar colunas..."));
             node.add(tableNode);
@@ -486,6 +594,7 @@ public class Main {
         node.removeAllChildren();
         try {
           List<String> columns = get();
+          COLUMN_CACHE.put(table.source + "." + table.table, columns.stream().map(c -> c.split("  :  ")[0]).toList());
           for (String column : columns) node.add(new DefaultMutableTreeNode(column));
           status.setText(" " + columns.size() + " colunas de " + table.table + ".");
         } catch (Exception ex) {
@@ -705,6 +814,7 @@ public class Main {
       Map<String, BasicDataSource> old = new LinkedHashMap<>(SOURCES);
       federation = next;
       SOURCES.clear(); SOURCES.putAll(nextSources);
+      TABLE_CACHE.clear(); COLUMN_CACHE.clear();
       if (previous != null) previous.close();
       for (BasicDataSource ds : old.values()) try { ds.close(); } catch (SQLException ignored) {}
     } catch (Exception ex) {

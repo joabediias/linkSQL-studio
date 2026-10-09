@@ -8,6 +8,12 @@ import org.apache.calcite.adapter.jdbc.JdbcSchema;
 import org.apache.calcite.jdbc.CalciteConnection;
 import org.apache.calcite.schema.SchemaPlus;
 import org.apache.commons.dbcp2.BasicDataSource;
+import com.formdev.flatlaf.FlatDarkLaf;
+import com.formdev.flatlaf.FlatLightLaf;
+import org.fife.ui.rsyntaxtextarea.RSyntaxTextArea;
+import org.fife.ui.rsyntaxtextarea.SyntaxConstants;
+import org.fife.ui.rsyntaxtextarea.Theme;
+import org.fife.ui.rtextarea.RTextScrollPane;
 
 import javax.swing.*;
 import javax.swing.event.TreeSelectionEvent;
@@ -22,6 +28,7 @@ import java.nio.file.*;
 import java.sql.*;
 import java.util.*;
 import java.util.List;
+import java.util.prefs.Preferences;
 
 public class Main {
   private static final ObjectMapper JSON = new ObjectMapper();
@@ -29,7 +36,13 @@ public class Main {
   private static Connection federation;
   private static Path configPath = Paths.get("config", "connections.example.json");
   private static final int ROW_LIMIT = 1000;
+  private static final Preferences PREFS = Preferences.userNodeForPackage(Main.class);
+  private static boolean darkMode = PREFS.getBoolean("darkMode", true);
   private static JFrame frame;
+  private static JButton themeButton;
+  private static JPanel toolbar;
+  private static JLabel resultSummary;
+  private static long queryStarted;
   private static JLabel status;
   private static JTable results;
   private static JTabbedPane tabs;
@@ -39,14 +52,54 @@ public class Main {
   private static SwingWorker<DefaultTableModel, Void> currentQuery;
 
   public static void main(String[] args) {
+    try { applyLookAndFeel(); } catch (Exception ex) { ex.printStackTrace(); }
     SwingUtilities.invokeLater(Main::createUi);
     Runtime.getRuntime().addShutdownHook(new Thread(Main::closeResources));
   }
 
+  private static void applyLookAndFeel() throws UnsupportedLookAndFeelException {
+    UIManager.setLookAndFeel(darkMode ? new FlatDarkLaf() : new FlatLightLaf());
+    UIManager.put("Button.arc", 10);
+    UIManager.put("Component.arc", 9);
+    UIManager.put("TextComponent.arc", 8);
+    UIManager.put("TabbedPane.showTabSeparators", true);
+    UIManager.put("Table.showHorizontalLines", true);
+    UIManager.put("Table.rowHeight", 28);
+    UIManager.put("Tree.rowHeight", 24);
+  }
+
+  private static void toggleTheme() {
+    darkMode = !darkMode;
+    PREFS.putBoolean("darkMode", darkMode);
+    try {
+      applyLookAndFeel();
+      SwingUtilities.updateComponentTreeUI(frame);
+      for (int i = 0; i < tabs.getTabCount(); i++) {
+        RSyntaxTextArea editor = (RSyntaxTextArea) ((JScrollPane) tabs.getComponentAt(i)).getViewport().getView();
+        styleEditor(editor);
+      }
+      themeButton.setText(darkMode ? "☀  Tema claro" : "☾  Tema escuro");
+      frame.repaint();
+    } catch (Exception ex) { showError(ex); }
+  }
+
+  private static void styleEditor(RSyntaxTextArea area) {
+    String resource = darkMode ? "/org/fife/ui/rsyntaxtextarea/themes/dark.xml" : "/org/fife/ui/rsyntaxtextarea/themes/default.xml";
+    try (InputStream in = Main.class.getResourceAsStream(resource)) {
+      if (in != null) Theme.load(in).apply(area);
+    } catch (IOException ex) { ex.printStackTrace(); }
+    area.setBackground(UIManager.getColor("TextArea.background"));
+    area.setForeground(UIManager.getColor("TextArea.foreground"));
+    area.setCurrentLineHighlightColor(darkMode ? new Color(48, 55, 69) : new Color(233, 240, 250));
+    area.setCaretColor(UIManager.getColor("TextArea.foreground"));
+    area.setSelectionColor(darkMode ? new Color(57, 93, 148) : new Color(178, 210, 249));
+  }
+
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 0.4");
+    frame = new JFrame("SantySQL Studio - 0.5");
     frame.setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
-    frame.setSize(1250, 790);
+    frame.setSize(1360, 840);
+    frame.setMinimumSize(new Dimension(900, 600));
     frame.setLocationRelativeTo(null);
 
     JButton load = new JButton("Carregar conexões");
@@ -55,12 +108,19 @@ public class Main {
     execute = new JButton("Executar SQL  (Ctrl+Enter)");
     JButton clear = new JButton("Limpar grade");
     JButton export = new JButton("Exportar CSV");
-    JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 7, 5));
-    for (JButton b : new JButton[]{load, manage, newTab, execute, clear, export}) toolbar.add(b);
+    themeButton = new JButton(darkMode ? "☀  Tema claro" : "☾  Tema escuro");
+    toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 9, 9));
+    toolbar.setBorder(BorderFactory.createEmptyBorder(2, 8, 2, 8));
+    execute.putClientProperty("JButton.buttonType", "roundRect");
+    execute.setBackground(new Color(40, 116, 218));
+    execute.setForeground(Color.WHITE);
+    for (JButton b : new JButton[]{load, manage, newTab, execute, clear, export, themeButton}) toolbar.add(b);
 
     rootNode = new DefaultMutableTreeNode("Conexões MySQL");
     explorer = new JTree(rootNode);
     explorer.setRootVisible(true);
+    explorer.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 13));
+    explorer.setShowsRootHandles(true);
     explorer.addTreeWillExpandListener(new javax.swing.event.TreeWillExpandListener() {
       public void treeWillExpand(javax.swing.event.TreeExpansionEvent event) {
         Object node = event.getPath().getLastPathComponent();
@@ -114,18 +174,33 @@ public class Main {
     results = new JTable(new DefaultTableModel());
     results.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
     results.setAutoCreateRowSorter(true);
-    results.setRowHeight(23);
+    results.setRowHeight(28);
+    results.setShowHorizontalLines(true);
+    results.setShowVerticalLines(false);
     results.setCellSelectionEnabled(true);
-    results.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+    results.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 13));
+    results.getTableHeader().setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
     results.getTableHeader().setReorderingAllowed(true);
-    JSplitPane vertical = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tabs, new JScrollPane(results));
+    JPanel resultPanel = new JPanel(new BorderLayout());
+    resultSummary = new JLabel("  RESULTADOS  ·  Nenhuma consulta executada");
+    resultSummary.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
+    resultSummary.setBorder(BorderFactory.createEmptyBorder(9, 8, 9, 8));
+    resultPanel.add(resultSummary, BorderLayout.NORTH);
+    resultPanel.add(new JScrollPane(results), BorderLayout.CENTER);
+    JSplitPane vertical = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tabs, resultPanel);
     vertical.setResizeWeight(.48);
     JSplitPane horizontal = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, new JScrollPane(explorer), vertical);
     horizontal.setResizeWeight(.19);
-    horizontal.setDividerLocation(240);
+    horizontal.setDividerLocation(275);
     status = new JLabel(" Carregue as conexões para iniciar. | Limite de visualização: " + ROW_LIMIT + " linhas");
     status.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
-    frame.add(toolbar, BorderLayout.NORTH);
+    JPanel top = new JPanel(new BorderLayout());
+    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado");
+    brand.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 15));
+    brand.setBorder(BorderFactory.createEmptyBorder(12, 10, 8, 10));
+    top.add(brand, BorderLayout.NORTH);
+    top.add(toolbar, BorderLayout.CENTER);
+    frame.add(top, BorderLayout.NORTH);
     frame.add(horizontal, BorderLayout.CENTER);
     frame.add(status, BorderLayout.SOUTH);
 
@@ -135,18 +210,29 @@ public class Main {
     execute.addActionListener(e -> runQuery());
     clear.addActionListener(e -> results.setModel(new DefaultTableModel()));
     export.addActionListener(e -> exportCsv());
+    themeButton.addActionListener(e -> toggleTheme());
     frame.setVisible(true);
   }
 
   private static void addSqlTab() {
-    JTextArea area = new JTextArea("", 15, 60);
+    RSyntaxTextArea area = new RSyntaxTextArea(15, 60);
+    area.setSyntaxEditingStyle(SyntaxConstants.SYNTAX_STYLE_SQL);
+    area.setCodeFoldingEnabled(true);
+    area.setAntiAliasingEnabled(true);
+    area.setMarkOccurrences(true);
+    area.setBracketMatchingEnabled(true);
+    area.setPaintTabLines(true);
+    styleEditor(area);
     area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 14));
     area.setTabSize(2);
     if (tabs.getTabCount() == 0) area.setText("SELECT *\nFROM SRV_ARRAIAL.cad_usu0\nFETCH NEXT 100 ROWS ONLY;");
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.CTRL_DOWN_MASK), "runSql");
     area.getActionMap().put("runSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { runQuery(); } });
     String title = "SQL " + (tabs.getTabCount() + 1);
-    tabs.addTab(title, new JScrollPane(area));
+    RTextScrollPane scroll = new RTextScrollPane(area);
+    scroll.setLineNumbersEnabled(true);
+    scroll.setFoldIndicatorEnabled(true);
+    tabs.addTab(title, scroll);
     tabs.setSelectedIndex(tabs.getTabCount() - 1);
   }
 
@@ -305,7 +391,9 @@ public class Main {
     if (sql.isBlank()) { status.setText(" Posicione o cursor em uma consulta ou selecione o SQL."); return; }
     final String query = sql;
     execute.setEnabled(false);
+    queryStarted = System.nanoTime();
     status.setText(" Executando consulta...");
+    resultSummary.setText("  RESULTADOS  ·  Executando...");
     currentQuery = new SwingWorker<>() {
       protected DefaultTableModel doInBackground() throws Exception {
         try (Statement stmt = federation.createStatement()) {
@@ -333,8 +421,10 @@ public class Main {
           DefaultTableModel model = get();
           results.setModel(model);
           configureColumns();
+          double elapsed = (System.nanoTime() - queryStarted) / 1_000_000_000.0;
+          resultSummary.setText(String.format(Locale.ROOT, "  RESULTADOS  ·  %,d linhas  ·  %.2f s", model.getRowCount(), elapsed));
           status.setText(" Consulta concluída: " + model.getRowCount() + " linhas (limite: " + ROW_LIMIT + ").");
-        } catch (Exception ex) { status.setText(" Falha na consulta."); showError(ex); }
+        } catch (Exception ex) { resultSummary.setText("  RESULTADOS  ·  Erro na consulta"); status.setText(" Falha na consulta."); showError(ex); }
       }
     };
     currentQuery.execute();

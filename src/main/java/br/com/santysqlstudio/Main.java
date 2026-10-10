@@ -285,7 +285,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 1.6");
+    frame = new JFrame("SantySQL Studio - 1.7");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -344,6 +344,9 @@ public class Main {
     fileMenu.add(renameTab);
     addMenuAction(sqlMenu, "Executar SQL (Ctrl+Enter)", execute);
     addMenuAction(sqlMenu, "Executar script (Ctrl+Shift+Enter)", executeScriptButton);
+    JMenuItem explainSql = new JMenuItem("Explicar SQL (Ctrl+Alt+E)...");
+    explainSql.addActionListener(e -> explainActiveSql());
+    sqlMenu.add(explainSql);
     addMenuAction(sqlMenu, "Cancelar consulta", cancelQueryButton);
     addMenuAction(sqlMenu, "Formatar SQL (Ctrl+Shift+F)", formatSql);
     addMenuAction(sqlMenu, "Historico SQL", history);
@@ -367,6 +370,19 @@ public class Main {
     addMenuAction(connectionsMenu, "Carregar conexoes", load);
     addMenuAction(connectionsMenu, "Gerenciar conexoes", manage);
     addMenuAction(connectionsMenu, "Buscar coluna", searchColumns);
+    JMenuItem structure = new JMenuItem("Estrutura da tabela selecionada...");
+    structure.addActionListener(e -> {
+      TreePath path = explorer.getSelectionPath();
+      if (path == null) { status.setText(" Selecione uma tabela no explorador."); return; }
+      DefaultMutableTreeNode node = (DefaultMutableTreeNode) path.getLastPathComponent();
+      Object selected = node.getUserObject();
+      if (selected instanceof TableNode t) showTableMetadata(t, null);
+      else if (node.getParent() instanceof DefaultMutableTreeNode parent && parent.getUserObject() instanceof TableNode t
+          && selected instanceof String column && column.contains("  :  "))
+        showTableMetadata(t, column.split("  :  ", 2)[0]);
+      else status.setText(" Selecione uma tabela ou coluna no explorador.");
+    });
+    connectionsMenu.add(structure);
     menuBar.add(connectionsMenu);
 
     JMenu viewMenu = new JMenu("Aparencia");
@@ -401,17 +417,38 @@ public class Main {
     JPopupMenu tableMenu = new JPopupMenu();
     JMenuItem queryTable = new JMenuItem("Consultar dados (100 linhas)");
     JMenuItem copyTable = new JMenuItem("Copiar nome completo");
+    JMenuItem inspectTable = new JMenuItem("Estrutura da tabela...");
+    JMenuItem inspectColumn = new JMenuItem("Detalhes da coluna...");
     tableMenu.add(queryTable);
     tableMenu.add(copyTable);
+    tableMenu.addSeparator();
+    tableMenu.add(inspectTable);
+    tableMenu.add(inspectColumn);
     final TableNode[] selectedTable = new TableNode[1];
+    final String[] selectedColumnName = new String[1];
     explorer.addMouseListener(new MouseAdapter() {
       private void popup(MouseEvent e) {
         if (!e.isPopupTrigger()) return;
         TreePath path = explorer.getPathForLocation(e.getX(), e.getY());
         if (path == null) return;
-        Object item = ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
-        if (!(item instanceof TableNode table)) return;
+        DefaultMutableTreeNode clicked = (DefaultMutableTreeNode) path.getLastPathComponent();
+        Object item = clicked.getUserObject();
+        TableNode table;
+        String column = null;
+        if (item instanceof TableNode selected) {
+          table = selected;
+        } else if (item instanceof String label && clicked.getParent() instanceof DefaultMutableTreeNode parent
+            && parent.getUserObject() instanceof TableNode selected && !label.startsWith("Carregando")
+            && !label.startsWith("Erro") && !label.startsWith("Expandir")) {
+          table = selected;
+          column = label.split("  :  ", 2)[0];
+        } else return;
         selectedTable[0] = table;
+        selectedColumnName[0] = column;
+        queryTable.setVisible(column == null);
+        copyTable.setVisible(column == null);
+        inspectTable.setVisible(column == null);
+        inspectColumn.setVisible(column != null);
         explorer.setSelectionPath(path);
         tableMenu.show(explorer, e.getX(), e.getY());
       }
@@ -425,6 +462,13 @@ public class Main {
         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(
             new java.awt.datatransfer.StringSelection(qualifiedTable(table)), null);
       }
+    });
+    inspectTable.addActionListener(e -> {
+      if (selectedTable[0] != null) showTableMetadata(selectedTable[0], null);
+    });
+    inspectColumn.addActionListener(e -> {
+      if (selectedTable[0] != null && selectedColumnName[0] != null)
+        showTableMetadata(selectedTable[0], selectedColumnName[0]);
     });
 
     searchColumns.addActionListener(e -> searchColumnsAcrossTables());
@@ -549,6 +593,10 @@ public class Main {
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.CTRL_DOWN_MASK), "runSql");
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK), "runScript");
     area.getActionMap().put("runScript", new AbstractAction() { public void actionPerformed(ActionEvent e) { runScript(); } });
+    area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_E, InputEvent.CTRL_DOWN_MASK | InputEvent.ALT_DOWN_MASK), "explainSql");
+    area.getActionMap().put("explainSql", new AbstractAction() {
+      public void actionPerformed(ActionEvent e) { explainActiveSql(); }
+    });
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_SPACE, InputEvent.CTRL_DOWN_MASK), "sqlComplete");
     area.getActionMap().put("sqlComplete", new AbstractAction() { public void actionPerformed(ActionEvent e) { showCompletions(area); } });
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK), "saveSql");
@@ -2012,6 +2060,166 @@ public class Main {
     currentQuery.execute();
     // Ctrl+Enter deve manter o teclado no editor, sem alterar cursor ou seleção.
     SwingUtilities.invokeLater(queryEditor::requestFocusInWindow);
+  }
+
+  // Detalhes de tabelas e colunas sao obtidos via JDBC somente no servidor selecionado.
+  private static void showTableMetadata(TableNode table, String selectedColumn) {
+    BasicDataSource source = SOURCES.get(table.source);
+    if (source == null) {
+      status.setText(" Conexao indisponivel para " + table.source + ".");
+      return;
+    }
+    TableMetadataDialog.show(frame, source, table.source, table.table, selectedColumn);
+  }
+
+  // EXPLAIN e somente-leitura: o comando SQL original nao e executado aqui.
+  // Para um servidor utiliza EXPLAIN nativo; para varios servidores, o plano logico do Calcite.
+  private static void explainActiveSql() {
+    JTextArea editor = activeEditor();
+    if (federation == null) {
+      status.setText(" Carregue as conexoes primeiro.");
+      return;
+    }
+    if (currentQuery != null && !currentQuery.isDone()) {
+      status.setText(" Aguarde a consulta em andamento antes de explicar outro SQL.");
+      return;
+    }
+    String sql = editor.getSelectedText();
+    if (sql == null || sql.isBlank()) sql = statementAtCaret(editor);
+    sql = sql.trim();
+    while (sql.endsWith(";")) sql = sql.substring(0, sql.length() - 1).trim();
+    if (sql.isBlank() || !(sql.toUpperCase(Locale.ROOT).startsWith("SELECT ")
+        || sql.toUpperCase(Locale.ROOT).startsWith("WITH "))) {
+      status.setText(" EXPLAIN aceita SELECT ou WITH. Selecione uma consulta ou posicione o cursor nela.");
+      return;
+    }
+    if (splitScript(sql).size() != 1) {
+      status.setText(" Explique uma consulta por vez. Posicione o cursor em um SELECT.");
+      return;
+    }
+    final String original = sql;
+    final DirectSql direct = directSql(original);
+    final boolean mysql = direct != null;
+    final String explainCommand = mysql
+        ? "EXPLAIN FORMAT=TRADITIONAL " + executableSql(original)
+        : "EXPLAIN PLAN FOR " + original;
+    execute.setEnabled(false);
+    executeScriptButton.setEnabled(false);
+    cancelQueryButton.setEnabled(true);
+    CANCEL_REQUESTED.set(false);
+    final long started = System.nanoTime();
+    status.setText(" Gerando plano de execucao (" + (mysql ? "MySQL" : "Calcite") + ")...");
+    currentQuery = new SwingWorker<DefaultTableModel, Void>() {
+      protected DefaultTableModel doInBackground() throws Exception {
+        Connection conn = null;
+        Statement stmt = null;
+        try {
+          conn = mysql ? SOURCES.get(direct.source()).getConnection() : openQueryConnection();
+          stmt = conn.createStatement();
+          RUNNING_CONNECTION.set(conn);
+          RUNNING_STATEMENT.set(stmt);
+          stmt.setQueryTimeout(120);
+          if (isCancelled()) throw new java.util.concurrent.CancellationException("EXPLAIN cancelado");
+          try (ResultSet rs = stmt.executeQuery(explainCommand)) {
+            return readResultModel(rs, 1000, this::isCancelled);
+          }
+        } finally {
+          RUNNING_STATEMENT.compareAndSet(stmt, null);
+          RUNNING_CONNECTION.compareAndSet(conn, null);
+          if (stmt != null) try { stmt.close(); } catch (SQLException ignored) {}
+          if (conn != null) try { conn.close(); } catch (SQLException ignored) {}
+        }
+      }
+      protected void done() {
+        if (currentQuery != this) return;
+        execute.setEnabled(true);
+        executeScriptButton.setEnabled(true);
+        cancelQueryButton.setEnabled(false);
+        try {
+          DefaultTableModel plan = get();
+          double seconds = (System.nanoTime() - started) / 1e9;
+          showExplainDialog(original, explainCommand, mysql, plan, seconds);
+          status.setText(String.format(DISPLAY_LOCALE,
+              " Plano %s obtido em %.2f s (estimativas; nao e o tempo real do SELECT).",
+              mysql ? "MySQL" : "Calcite", seconds));
+        } catch (Exception ex) {
+          if (CANCEL_REQUESTED.get() || ex instanceof java.util.concurrent.CancellationException)
+            status.setText(" Geracao do plano cancelada.");
+          else {
+            status.setText(" Erro ao gerar plano de execucao.");
+            showError(ex);
+          }
+        } finally { updatePageControls(); }
+      }
+    };
+    currentQuery.execute();
+    SwingUtilities.invokeLater(editor::requestFocusInWindow);
+  }
+
+  private static void showExplainDialog(String original, String command, boolean mysql,
+                                        DefaultTableModel model, double seconds) {
+    JDialog dialog = new JDialog(frame, "Plano de execucao - " + (mysql ? "MySQL" : "Calcite"), false);
+    dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+    JPanel panel = new JPanel(new BorderLayout(8, 8));
+    panel.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
+    JLabel heading = new JLabel(String.format(DISPLAY_LOCALE,
+        "%s  ·  %.2f s  ·  Plano estimado (consulta nao executada)",
+        mysql ? "MySQL direto" : "Calcite federado", seconds));
+    panel.add(heading, BorderLayout.NORTH);
+    if (!mysql && model.getColumnCount() == 1) {
+      StringBuilder planText = new StringBuilder();
+      for (int i = 0; i < model.getRowCount(); i++) {
+        if (i > 0) planText.append('\n');
+        Object value = model.getValueAt(i, 0);
+        if (value != null) planText.append(value);
+      }
+      JTextArea text = new JTextArea(planText.toString(), 22, 100);
+      text.setEditable(false);
+      text.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+      panel.add(new JScrollPane(text), BorderLayout.CENTER);
+    } else {
+      JTable table = newResultTable(model);
+      table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+      configureColumns(table);
+      panel.add(new JScrollPane(table), BorderLayout.CENTER);
+    }
+    JButton copy = new JButton("Copiar plano");
+    copy.addActionListener(e -> {
+      StringBuilder text = new StringBuilder();
+      for (int col = 0; col < model.getColumnCount(); col++) {
+        if (col > 0) text.append('\t');
+        text.append(model.getColumnName(col));
+      }
+      text.append('\n');
+      for (int row = 0; row < model.getRowCount(); row++) {
+        for (int col = 0; col < model.getColumnCount(); col++) {
+          if (col > 0) text.append('\t');
+          Object value = model.getValueAt(row, col);
+          if (value != null) text.append(value);
+        }
+        text.append('\n');
+      }
+      Toolkit.getDefaultToolkit().getSystemClipboard().setContents(
+          new java.awt.datatransfer.StringSelection(text.toString()), null);
+    });
+    JButton sqlButton = new JButton("Mostrar SQL do EXPLAIN");
+    sqlButton.addActionListener(e -> {
+      JTextArea content = new JTextArea("SQL original:\n" + original +
+          "\n\nSQL enviado ao EXPLAIN:\n" + command, 12, 70);
+      content.setEditable(false);
+      content.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+      JScrollPane scroll = new JScrollPane(content);
+      scroll.setPreferredSize(new Dimension(720, 260));
+      JOptionPane.showMessageDialog(dialog, scroll, "SQL analisado", JOptionPane.PLAIN_MESSAGE);
+    });
+    JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+    buttons.add(sqlButton);
+    buttons.add(copy);
+    panel.add(buttons, BorderLayout.SOUTH);
+    dialog.setContentPane(panel);
+    dialog.setSize(980, 570);
+    dialog.setLocationRelativeTo(frame);
+    dialog.setVisible(true);
   }
 
   // Separa comandos SQL sem quebrar strings ou comentarios.

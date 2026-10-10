@@ -285,7 +285,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 1.8.1");
+    frame = new JFrame("SantySQL Studio - 1.9");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -356,6 +356,16 @@ public class Main {
     JMenuItem replaceItem = new JMenuItem("Localizar e substituir (Ctrl+H)");
     replaceItem.addActionListener(e -> showFindReplace(true));
     sqlMenu.add(replaceItem);
+    sqlMenu.addSeparator();
+    JMenuItem goLine = new JMenuItem("Ir para linha... (Ctrl+G)");
+    goLine.addActionListener(e -> goToSqlLine());
+    sqlMenu.add(goLine);
+    JMenuItem comment = new JMenuItem("Comentar/descomentar linhas (Ctrl+/)");
+    comment.addActionListener(e -> toggleSqlComment());
+    sqlMenu.add(comment);
+    JMenuItem duplicate = new JMenuItem("Duplicar linha ou seleção (Ctrl+D)");
+    duplicate.addActionListener(e -> duplicateSqlLine());
+    sqlMenu.add(duplicate);
     menuBar.add(sqlMenu);
 
     JMenu resultMenu = new JMenu("Resultados");
@@ -546,7 +556,7 @@ public class Main {
     status = new JLabel(" Carregue as conexões para iniciar. | " + formatPageSize(preferredPageSize) + " linhas por página");
     status.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
     JPanel top = new JPanel(new BorderLayout());
-    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado   ·   v1.8.1");
+    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado   ·   v1.9");
     brand.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 15));
     brand.setBorder(BorderFactory.createEmptyBorder(12, 10, 8, 10));
     top.add(brand, BorderLayout.NORTH);
@@ -621,16 +631,35 @@ public class Main {
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_O, InputEvent.CTRL_DOWN_MASK), "openSql");
     area.getActionMap().put("openSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { openSqlFile(); } });
     area.getActionMap().put("runSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { runQuery(); } });
+    area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_G, InputEvent.CTRL_DOWN_MASK), "goToLine");
+    area.getActionMap().put("goToLine", new AbstractAction() { public void actionPerformed(ActionEvent e) { goToSqlLine(); } });
+    area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_SLASH, InputEvent.CTRL_DOWN_MASK), "toggleComment");
+    area.getActionMap().put("toggleComment", new AbstractAction() { public void actionPerformed(ActionEvent e) { toggleSqlComment(); } });
+    area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_D, InputEvent.CTRL_DOWN_MASK), "duplicateLine");
+    area.getActionMap().put("duplicateLine", new AbstractAction() { public void actionPerformed(ActionEvent e) { duplicateSqlLine(); } });
     String title = "SQL " + (nextTabNumber++);
     RTextScrollPane scroll = new RTextScrollPane(area);
     scroll.setLineNumbersEnabled(true);
     scroll.setFoldIndicatorEnabled(true);
     tabs.addTab(title, scroll);
     SAVED_TEXT.put(scroll, area.getText());
+    // Autocomplete de digitação: aguarda uma pausa e nunca bloqueia a escrita.
+    javax.swing.Timer completionDelay = new javax.swing.Timer(420, e -> {
+      if (area.isShowing() && area.isFocusOwner() && area.getSelectedText() == null)
+        showCompletions(area, false, true);
+    });
+    completionDelay.setRepeats(false);
     area.getDocument().addDocumentListener(new DocumentListener() {
-      public void insertUpdate(DocumentEvent e) { updateDirtyTitle(scroll); scheduleSessionSave(); }
-      public void removeUpdate(DocumentEvent e) { updateDirtyTitle(scroll); scheduleSessionSave(); }
-      public void changedUpdate(DocumentEvent e) { updateDirtyTitle(scroll); scheduleSessionSave(); }
+      private void changed() {
+        closeCompletion(area);
+        updateDirtyTitle(scroll);
+        scheduleSessionSave();
+        if (area.isShowing() && area.isFocusOwner()) completionDelay.restart();
+        else completionDelay.stop();
+      }
+      public void insertUpdate(DocumentEvent e) { SwingUtilities.invokeLater(this::changed); }
+      public void removeUpdate(DocumentEvent e) { SwingUtilities.invokeLater(this::changed); }
+      public void changedUpdate(DocumentEvent e) { SwingUtilities.invokeLater(this::changed); }
     });
     tabs.setSelectedIndex(tabs.getTabCount() - 1);
     scheduleSessionSave();
@@ -650,6 +679,69 @@ public class Main {
     tabs.setTitleAt(index, name.trim());
     updateDirtyTitle(tab);
     scheduleSessionSave();
+  }
+
+  // Operacoes sobre o editor SQL, sem modificar o resultado de consultas.
+  private static void goToSqlLine() {
+    RSyntaxTextArea editor = (RSyntaxTextArea) activeEditor();
+    int current = 1;
+    try { current = editor.getLineOfOffset(editor.getCaretPosition()) + 1; }
+    catch (javax.swing.text.BadLocationException ignored) { }
+    String input = JOptionPane.showInputDialog(frame,
+        "Linha (1 a " + editor.getLineCount() + "):", Integer.toString(current));
+    if (input == null) return;
+    try {
+      int line = Integer.parseInt(input.trim());
+      if (line < 1 || line > editor.getLineCount()) throw new NumberFormatException();
+      editor.setCaretPosition(editor.getLineStartOffset(line - 1));
+      editor.requestFocusInWindow();
+    } catch (NumberFormatException | javax.swing.text.BadLocationException ex) {
+      JOptionPane.showMessageDialog(frame, "Informe uma linha válida de 1 a " + editor.getLineCount() + ".");
+    }
+  }
+
+  private static void toggleSqlComment() {
+    RSyntaxTextArea editor = (RSyntaxTextArea) activeEditor();
+    try {
+      int start = editor.getSelectionStart();
+      int end = editor.getSelectionEnd();
+      boolean selected = end > start;
+      int first = editor.getLineOfOffset(start);
+      int last = editor.getLineOfOffset(selected ? end - 1 : end);
+      int begin = editor.getLineStartOffset(first);
+      int finish = editor.getLineEndOffset(last);
+      String content = editor.getText(begin, finish - begin);
+      String changed = SqlEditorActions.toggleComments(content);
+      if (!changed.equals(content)) {
+        editor.replaceRange(changed, begin, finish);
+        if (selected) editor.select(begin, begin + changed.length());
+        else editor.setCaretPosition(Math.min(begin + changed.length(),
+            Math.max(begin, start + changed.length() - content.length())));
+      }
+      editor.requestFocusInWindow();
+    } catch (javax.swing.text.BadLocationException ex) { showError(ex); }
+  }
+
+  private static void duplicateSqlLine() {
+    RSyntaxTextArea editor = (RSyntaxTextArea) activeEditor();
+    try {
+      if (editor.getSelectionStart() != editor.getSelectionEnd()) {
+        int end = editor.getSelectionEnd();
+        String selected = editor.getSelectedText();
+        editor.insert(selected, end);
+        editor.select(end, end + selected.length());
+      } else {
+        int line = editor.getLineOfOffset(editor.getCaretPosition());
+        int start = editor.getLineStartOffset(line);
+        int end = editor.getLineEndOffset(line);
+        String text = editor.getText(start, end - start);
+        boolean finalLine = end == editor.getDocument().getLength() && !text.endsWith("\n");
+        String inserted = finalLine ? "\n" + text : text;
+        editor.insert(inserted, end);
+        editor.setCaretPosition(end + inserted.length());
+      }
+      editor.requestFocusInWindow();
+    } catch (javax.swing.text.BadLocationException ex) { showError(ex); }
   }
 
   private static void showFindReplace(boolean replaceMode) {
@@ -1045,15 +1137,24 @@ public class Main {
   }
 
   private static void showCompletions(RSyntaxTextArea editor) {
-    showCompletions(editor, true);
+    showCompletions(editor, true, false);
   }
 
   private static void showCompletions(RSyntaxTextArea editor, boolean allowLoad) {
+    showCompletions(editor, allowLoad, false);
+  }
+
+  private static void showCompletions(RSyntaxTextArea editor, boolean allowLoad, boolean automatic) {
+    closeCompletion(editor);
+    if (!editor.isShowing()) return;
+    // Evita mostrar sugestões em literais SQL, comentários ou identificadores entre aspas.
+    if (!SqlCompletionContext.isCodePosition(editor.getText(), editor.getCaretPosition())) return;
     int caret = editor.getCaretPosition();
     String before = editor.getText().substring(0, caret);
     int start = caret;
     while (start > 0 && (Character.isLetterOrDigit(before.charAt(start - 1)) || before.charAt(start - 1) == '_')) start--;
     String prefix = before.substring(start).toLowerCase(Locale.ROOT);
+    if (automatic && (prefix.length() < 2 || editor.getSelectedText() != null)) return;
     String left = before.substring(0, start);
     java.util.regex.Matcher qualifierMatcher = java.util.regex.Pattern.compile(
         "(?i)([a-z_][a-z0-9_]*)\\s*\\.\\s*$").matcher(left);
@@ -1112,7 +1213,7 @@ public class Main {
         }
       }
     } else if (qualifier != null) {
-      status.setText(" Qualificador '" + qualifier + "' nao encontrado em FROM/JOIN desta consulta.");
+      if (!automatic) status.setText(" Qualificador '" + qualifier + "' nao encontrado em FROM/JOIN desta consulta.");
       return;
     } else {
       Collections.addAll(candidates, SQL_WORDS);
@@ -1132,54 +1233,113 @@ public class Main {
     java.util.List<String> matches = new ArrayList<>();
     for (String candidate : candidates) {
       if (candidate.toLowerCase(Locale.ROOT).startsWith(prefix)) matches.add(candidate);
-      if (matches.size() >= 100) break;
+      if (matches.size() >= (automatic ? 35 : 100)) break;
     }
     if (matches.isEmpty()) {
-      status.setText(" Nenhuma sugestão encontrada para '" + prefix + "'.");
+      if (!automatic) status.setText(" Nenhuma sugestão encontrada para '" + prefix + "'.");
       return;
     }
+    // Nao distrai enquanto uma palavra ja corresponde exatamente ao unico candidato.
+    if (automatic && matches.size() == 1 && matches.get(0).equalsIgnoreCase(prefix)) return;
     final int replaceStart = start;
     JList<String> suggestions = new JList<>(matches.toArray(new String[0]));
     suggestions.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
     suggestions.setSelectedIndex(0);
     suggestions.setVisibleRowCount(Math.min(9, matches.size()));
     suggestions.setFixedCellHeight(25);
+    suggestions.setFocusable(false);  // O cursor permanece no SQL.
     JScrollPane scroll = new JScrollPane(suggestions);
     scroll.setBorder(BorderFactory.createEmptyBorder());
-    scroll.setPreferredSize(new Dimension(280, Math.min(9, matches.size()) * 25 + 4));
+    scroll.setPreferredSize(new Dimension(310, Math.min(9, matches.size()) * 25 + 4));
     JPopupMenu menu = new JPopupMenu();
     menu.setLayout(new BorderLayout());
     menu.add(scroll, BorderLayout.CENTER);
     Runnable accept = () -> {
       String candidate = suggestions.getSelectedValue();
-      if (candidate == null) return;
+      if (candidate == null || editor.getCaretPosition() != caret) {
+        closeCompletion(editor);
+        return;
+      }
+      closeCompletion(editor);
       try {
         editor.getDocument().remove(replaceStart, caret - replaceStart);
         editor.getDocument().insertString(replaceStart, candidate, null);
         editor.setCaretPosition(replaceStart + candidate.length());
-        menu.setVisible(false);
         SwingUtilities.invokeLater(editor::requestFocusInWindow);
       } catch (javax.swing.text.BadLocationException ex) { showError(ex); }
     };
     suggestions.addMouseListener(new MouseAdapter() {
       public void mouseClicked(MouseEvent e) { if (e.getClickCount() == 2) accept.run(); }
     });
-    suggestions.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "acceptCompletion");
-    suggestions.getActionMap().put("acceptCompletion", new AbstractAction() {
-      public void actionPerformed(ActionEvent e) { accept.run(); }
-    });
-    suggestions.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "closeCompletion");
-    suggestions.getActionMap().put("closeCompletion", new AbstractAction() {
-      public void actionPerformed(ActionEvent e) {
-        menu.setVisible(false);
-        SwingUtilities.invokeLater(editor::requestFocusInWindow);
-      }
-    });
     try {
       Rectangle rect = editor.modelToView2D(caret).getBounds();
+      CompletionPopup popup = new CompletionPopup(menu, suggestions,
+          editor.getInputMap(JComponent.WHEN_FOCUSED));
+      editor.putClientProperty("sqlCompletionPopup", popup);
+      popup.install(editor, accept);
+      menu.addPopupMenuListener(new javax.swing.event.PopupMenuListener() {
+        public void popupMenuWillBecomeVisible(javax.swing.event.PopupMenuEvent e) { }
+        public void popupMenuWillBecomeInvisible(javax.swing.event.PopupMenuEvent e) { closeCompletion(editor); }
+        public void popupMenuCanceled(javax.swing.event.PopupMenuEvent e) { closeCompletion(editor); }
+      });
       menu.show(editor, rect.x, rect.y + rect.height);
-      SwingUtilities.invokeLater(suggestions::requestFocusInWindow);
+      SwingUtilities.invokeLater(editor::requestFocusInWindow);
     } catch (javax.swing.text.BadLocationException ex) { showError(ex); }
+  }
+
+  // Mapas de teclas instalados temporariamente; Enter normal continua intacto fora da lista.
+  private static final class CompletionPopup {
+    final JPopupMenu menu;
+    final JList<String> suggestions;
+    final InputMap inputMap;
+    final Map<KeyStroke, Object> previous = new HashMap<>();
+    final String[] actions = {"santy-completion-next", "santy-completion-prev",
+        "santy-completion-accept", "santy-completion-close"};
+    final KeyStroke[] strokes = {
+        KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, 0), KeyStroke.getKeyStroke(KeyEvent.VK_UP, 0),
+        KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0)};
+    CompletionPopup(JPopupMenu menu, JList<String> suggestions, InputMap inputMap) {
+      this.menu = menu; this.suggestions = suggestions; this.inputMap = inputMap;
+    }
+    void install(RSyntaxTextArea editor, Runnable accept) {
+      for (int i = 0; i < strokes.length; i++) {
+        previous.put(strokes[i], inputMap.get(strokes[i]));
+        inputMap.put(strokes[i], actions[i]);
+      }
+      editor.getActionMap().put(actions[0], new AbstractAction() {
+        public void actionPerformed(ActionEvent e) { move(1); }
+      });
+      editor.getActionMap().put(actions[1], new AbstractAction() {
+        public void actionPerformed(ActionEvent e) { move(-1); }
+      });
+      editor.getActionMap().put(actions[2], new AbstractAction() {
+        public void actionPerformed(ActionEvent e) { accept.run(); }
+      });
+      editor.getActionMap().put(actions[3], new AbstractAction() {
+        public void actionPerformed(ActionEvent e) { closeCompletion(editor); }
+      });
+    }
+    void move(int step) {
+      int next = Math.max(0, Math.min(suggestions.getModel().getSize() - 1, suggestions.getSelectedIndex() + step));
+      suggestions.setSelectedIndex(next);
+      suggestions.ensureIndexIsVisible(next);
+    }
+    void restore(RSyntaxTextArea editor) {
+      for (int i = 0; i < strokes.length; i++) {
+        Object prior = previous.get(strokes[i]);
+        if (prior == null) inputMap.remove(strokes[i]);
+        else inputMap.put(strokes[i], prior);
+        editor.getActionMap().remove(actions[i]);
+      }
+    }
+  }
+
+  private static void closeCompletion(RSyntaxTextArea editor) {
+    Object value = editor.getClientProperty("sqlCompletionPopup");
+    if (!(value instanceof CompletionPopup popup)) return;
+    editor.putClientProperty("sqlCompletionPopup", null);
+    popup.restore(editor);
+    popup.menu.setVisible(false);
   }
 
   private static JTextArea activeEditor() {
@@ -2134,7 +2294,7 @@ public class Main {
 
   private static void showExplainDialog(String original, String command, boolean mysql,
                                         DefaultTableModel model, double seconds) {
-    JDialog dialog = new JDialog(frame, "Analise do EXPLAIN - 1.8.1 - " + (mysql ? "MySQL" : "Calcite"), false);
+    JDialog dialog = new JDialog(frame, "Analise do EXPLAIN - 1.9 - " + (mysql ? "MySQL" : "Calcite"), false);
     dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
     JPanel panel = new JPanel(new BorderLayout(8, 8));
     panel.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
@@ -2143,7 +2303,12 @@ public class Main {
         mysql ? "MySQL direto" : "Calcite federado", seconds));
     // A interpretacao fica sempre visivel acima do plano tecnico: nao depende de aba ou scroll oculto.
     JPanel summary = new JPanel(new BorderLayout(4, 6));
-    summary.add(heading, BorderLayout.NORTH);
+    JPanel headingPanel = new JPanel(new GridLayout(2, 1, 0, 4));
+    headingPanel.add(heading);
+    JLabel metrics = new JLabel(ExplainInsights.headline(model, mysql));
+    metrics.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
+    headingPanel.add(metrics);
+    summary.add(headingPanel, BorderLayout.NORTH);
     StringBuilder interpretation = new StringBuilder();
     for (String message : ExplainInsights.summarize(model, mysql)) {
       if (interpretation.length() > 0) interpretation.append('\n');
@@ -2198,6 +2363,20 @@ public class Main {
       Toolkit.getDefaultToolkit().getSystemClipboard().setContents(
           new java.awt.datatransfer.StringSelection(text.toString()), null);
     });
+    JButton glossary = new JButton("Como ler o plano?");
+    glossary.addActionListener(e -> {
+      JTextArea help = new JTextArea(ExplainInsights.helpText(), 17, 66);
+      help.setEditable(false);
+      help.setLineWrap(true);
+      help.setWrapStyleWord(true);
+      help.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 13));
+      JScrollPane pane = new JScrollPane(help);
+      pane.setPreferredSize(new Dimension(700, 390));
+      JOptionPane.showMessageDialog(dialog, pane, "Guia de EXPLAIN", JOptionPane.INFORMATION_MESSAGE);
+    });
+    JButton copyAnalysis = new JButton("Copiar análise");
+    copyAnalysis.addActionListener(e -> Toolkit.getDefaultToolkit().getSystemClipboard().setContents(
+        new java.awt.datatransfer.StringSelection(metrics.getText() + "\n\n" + interpretation), null));
     JButton sqlButton = new JButton("Mostrar SQL do EXPLAIN");
     sqlButton.addActionListener(e -> {
       JTextArea content = new JTextArea("SQL original:\n" + original +
@@ -2209,6 +2388,8 @@ public class Main {
       JOptionPane.showMessageDialog(dialog, scroll, "SQL analisado", JOptionPane.PLAIN_MESSAGE);
     });
     JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+    buttons.add(glossary);
+    buttons.add(copyAnalysis);
     buttons.add(sqlButton);
     buttons.add(copy);
     panel.add(buttons, BorderLayout.SOUTH);

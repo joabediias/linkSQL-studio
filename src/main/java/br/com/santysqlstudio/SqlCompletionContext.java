@@ -159,6 +159,40 @@ final class SqlCompletionContext {
         "INTERSECT", "WINDOW", "QUALIFY", "FOR", "AND", "OR", "AS").contains(word.toUpperCase(Locale.ROOT));
   }
 
+  /** Nao inicia sugestões em comentários, strings ou identificadores delimitados. */
+  static boolean isCodePosition(String sql, int caret) {
+    if (sql == null || caret < 0 || caret > sql.length()) return false;
+    char quote = 0;
+    boolean lineComment = false, blockComment = false;
+    for (int i = 0; i < caret; i++) {
+      char c = sql.charAt(i);
+      char next = i + 1 < caret ? sql.charAt(i + 1) : 0;
+      if (lineComment) {
+        if (c == '\n' || c == '\r') lineComment = false;
+        continue;
+      }
+      if (blockComment) {
+        if (c == '*' && next == '/') { blockComment = false; i++; }
+        continue;
+      }
+      if (quote != 0) {
+        if (c == '\\' && quote != '`' && next != 0) { i++; continue; }
+        if (c == quote) {
+          if (next == quote) i++;
+          else quote = 0;
+        }
+        continue;
+      }
+      if (c == '-' && next == '-' && (i + 2 >= caret || Character.isWhitespace(sql.charAt(i + 2)))) {
+        lineComment = true; i++; continue;
+      }
+      if (c == '#') { lineComment = true; continue; }
+      if (c == '/' && next == '*') { blockComment = true; i++; continue; }
+      if (c == '\'' || c == '"' || c == '`') quote = c;
+    }
+    return quote == 0 && !lineComment && !blockComment;
+  }
+
   private static List<Tok> lex(String sql) {
     List<Tok> tokens = new ArrayList<>();
     int depth = 0;

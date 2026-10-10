@@ -74,6 +74,50 @@ final class ExplainInsights {
     return messages;
   }
 
+  /** Panorama quantitativo do plano, sem atribuir um custo real a partir de estimativas. */
+  static String headline(TableModel plan, boolean mysql) {
+    if (!mysql) return "Plano federado: operações lógicas, sem métricas de execução real";
+    if (plan == null || plan.getRowCount() == 0) return "Nenhuma etapa retornada pelo EXPLAIN";
+    int type = column(plan, "type");
+    int rows = column(plan, "rows");
+    int scans = 0, indexed = 0;
+    long estimated = 0;
+    boolean known = false;
+    for (int i = 0; i < plan.getRowCount(); i++) {
+      String access = val(plan, i, type).toLowerCase(Locale.ROOT);
+      if (access.equals("all")) scans++;
+      if (List.of("index", "ref", "range", "const", "system", "eq_ref", "index_merge", "ref_or_null")
+          .contains(access)) indexed++;
+      String count = val(plan, i, rows);
+      if (!count.isBlank()) {
+        try { estimated = Math.addExact(estimated, new BigDecimal(count).longValueExact()); known = true; }
+        catch (ArithmeticException | NumberFormatException ignored) { known = false; }
+      }
+    }
+    NumberFormat nf = NumberFormat.getIntegerInstance(Locale.forLanguageTag("pt-BR"));
+    return nf.format(plan.getRowCount()) + " etapa(s) · " + scans + " varredura(s) completa(s) · "
+        + indexed + " acesso(s) indexado(s)" + (known ? " · ~" + nf.format(estimated) + " linhas estimadas*" : "")
+        + "  (*estimativas não aditivas em JOINs)";
+  }
+
+  static String helpText() {
+    return "COMO INTERPRETAR O EXPLAIN\n\n"
+        + "table: tabela ou etapa analisada.\n\n"
+        + "type: método de acesso. ALL indica varredura completa; index, leitura de índice; "
+        + "ref, range, eq_ref e const indicam diferentes formas de acesso seletivo. "
+        + "Nenhum tipo garante desempenho por si só.\n\n"
+        + "possible_keys: índices que o otimizador poderia considerar.\n\n"
+        + "key: índice efetivamente escolhido; vazio quando não foi escolhido.\n\n"
+        + "rows: quantidade ESTIMADA de linhas examinadas por etapa, não o número de registros retornados. "
+        + "Em JOINs, somar rows de etapas diferentes não representa o custo total.\n\n"
+        + "filtered: percentual ESTIMADO de linhas que passam pelo filtro (quando disponível).\n\n"
+        + "Extra: operações auxiliares. Using filesort indica ordenação adicional, não necessariamente uso de disco. "
+        + "Using temporary indica o uso de uma tabela temporária.\n\n"
+        + "DICA: teste consultas semelhantes com e sem filtros e compare o plano. "
+        + "EXPLAIN mostra estimativas; o tempo real exige executar a consulta. "
+        + "Não crie índices sem avaliar cardinalidade, volume e o impacto nas escritas.";
+  }
+
   private static int column(TableModel model, String name) {
     for (int i = 0; i < model.getColumnCount(); i++) {
       if (model.getColumnName(i).equalsIgnoreCase(name)) return i;

@@ -285,7 +285,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 1.7");
+    frame = new JFrame("SantySQL Studio - 1.8.1");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -546,7 +546,7 @@ public class Main {
     status = new JLabel(" Carregue as conexões para iniciar. | " + formatPageSize(preferredPageSize) + " linhas por página");
     status.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
     JPanel top = new JPanel(new BorderLayout());
-    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado");
+    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado   ·   v1.8.1");
     brand.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 15));
     brand.setBorder(BorderFactory.createEmptyBorder(12, 10, 8, 10));
     top.add(brand, BorderLayout.NORTH);
@@ -599,6 +599,17 @@ public class Main {
     });
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_SPACE, InputEvent.CTRL_DOWN_MASK), "sqlComplete");
     area.getActionMap().put("sqlComplete", new AbstractAction() { public void actionPerformed(ActionEvent e) { showCompletions(area); } });
+    // Exibe sugestoes ao digitar ponto apos alias de tabela, CTE ou nome do servidor.
+    // Ctrl+Espaco continua disponivel para disparo manual.
+    area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_PERIOD, 0), "sqlDotComplete");
+    area.getActionMap().put("sqlDotComplete", new AbstractAction() {
+      public void actionPerformed(ActionEvent e) {
+        area.replaceSelection(".");
+        SwingUtilities.invokeLater(() -> {
+          if (area.isShowing() && area.getSelectedText() == null) showCompletions(area);
+        });
+      }
+    });
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK), "saveSql");
     area.getActionMap().put("saveSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { saveSqlFile(false); } });
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_F, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK), "formatSql");
@@ -964,37 +975,6 @@ public class Main {
     }.execute();
   }
 
-  private record AliasTable(String source, String table) {}
-
-  // Analisa FROM/JOIN no comando SQL inteiro, inclusive depois da posicao do cursor.
-  // Aceita nomes entre aspas duplas/backticks e aliases com ou sem AS.
-  private static final java.util.regex.Pattern TABLE_REFERENCE = java.util.regex.Pattern.compile(
-      "(?i)\\b(?:FROM|JOIN)\\s+[`\"]?([a-z][a-z0-9_]*)[`\"]?\\s*\\.\\s*[`\"]?([a-z0-9_]+)[`\"]?" +
-      "(?:\\s+(?:AS\\s+)?([a-z_][a-z0-9_]*))?");
-
-  private static boolean isSqlKeyword(String word) {
-    if (word == null) return false;
-    return java.util.Arrays.asList("WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "ON",
-        "GROUP", "ORDER", "HAVING", "LIMIT", "FETCH", "UNION", "EXCEPT", "INTERSECT", "OFFSET",
-        "WINDOW", "QUALIFY").contains(word.toUpperCase(Locale.ROOT));
-  }
-
-  private static AliasTable resolveAlias(String sql, String alias) {
-    java.util.regex.Matcher m = TABLE_REFERENCE.matcher(sql);
-    AliasTable found = null;
-    while (m.find()) {
-      String source = resolveSource(m.group(1));
-      if (source == null) continue;
-      String table = m.group(2);
-      String declaredAlias = m.group(3);
-      if (alias.equalsIgnoreCase(table) || (declaredAlias != null &&
-          !isSqlKeyword(declaredAlias) && alias.equalsIgnoreCase(declaredAlias))) {
-        found = new AliasTable(source, table);
-      }
-    }
-    return found;
-  }
-
   // Evita capturar aliases de outro comando SQL na mesma aba.
   private static String completionStatement(String sql, int caret) {
     int start = 0, end = sql.length();
@@ -1076,85 +1056,77 @@ public class Main {
     String prefix = before.substring(start).toLowerCase(Locale.ROOT);
     String left = before.substring(0, start);
     java.util.regex.Matcher qualifierMatcher = java.util.regex.Pattern.compile(
-        "(?i)([a-z_][a-z0-9_]*)\\.\\s*$").matcher(left);
+        "(?i)([a-z_][a-z0-9_]*)\\s*\\.\\s*$").matcher(left);
     String qualifier = qualifierMatcher.find() ? qualifierMatcher.group(1) : null;
-    String source = qualifier == null ? null : resolveSource(qualifier);
-    boolean afterDot = source != null;
+    String server = qualifier == null ? null : resolveSource(qualifier);
     String contextSql = completionStatement(editor.getText(), caret);
-    AliasTable aliasTable = !afterDot && qualifier != null ? resolveAlias(contextSql, qualifier) : null;
-    if (qualifier != null && !afterDot && aliasTable == null) {
-      status.setText(" Alias '" + qualifier + "' nao encontrado em FROM/JOIN desta consulta.");
-      return;
-    }
+    SqlCompletionContext.Analysis context = SqlCompletionContext.analyze(contextSql, SOURCES.keySet());
+    SqlCompletionContext.Reference ref = server == null && qualifier != null ? context.reference(qualifier) : null;
     Set<String> candidates = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
 
-    if (aliasTable != null) {
-      String key = aliasTable.source() + "." + aliasTable.table();
-      List<String> columns = COLUMN_CACHE.get(key);
-      if (columns == null) {
+    if (qualifier != null && server != null) {
+      List<String> tables = TABLE_CACHE.get(server);
+      if (tables == null) {
         if (allowLoad) {
-          status.setText(" Carregando colunas de " + key + "...");
+          status.setText(" Carregando tabelas de " + server + " para autocompletar...");
           int originalCaret = caret;
-          fetchColumns(aliasTable.source(), aliasTable.table(), null);
+          fetchTables(server, null);
           javax.swing.Timer retry = new javax.swing.Timer(250, null);
           final int[] attempts = {0};
           retry.addActionListener(event -> {
             if (!editor.isShowing() || editor.getCaretPosition() != originalCaret || ++attempts[0] > 24) retry.stop();
-            else if (COLUMN_CACHE.containsKey(key)) { retry.stop(); showCompletions(editor, false); }
-            else if (!COLUMN_LOADING.contains(key)) retry.stop();
-          });
-          retry.start();
-        }
-        return;
-      }
-      candidates.addAll(columns);
-    } else if (afterDot) {
-      List<String> tables = TABLE_CACHE.get(source);
-      if (tables == null) {
-        if (allowLoad) {
-          status.setText(" Carregando tabelas de " + source + " para autocompletar...");
-          int originalCaret = caret;
-          fetchTables(source, null);
-          javax.swing.Timer retry = new javax.swing.Timer(250, null);
-          final int[] attempts = {0};
-          retry.addActionListener(event -> {
-            if (!editor.isShowing() || editor.getCaretPosition() != originalCaret || ++attempts[0] > 24) {
-              retry.stop();
-            } else if (TABLE_CACHE.containsKey(source)) {
-              retry.stop();
-              showCompletions(editor, false);
-            } else if (!TABLE_LOADING.contains(source)) {
-              retry.stop();
-              status.setText(" Não foi possível obter tabelas de " + source + ".");
-            }
+            else if (TABLE_CACHE.containsKey(server)) { retry.stop(); showCompletions(editor, false); }
+            else if (!TABLE_LOADING.contains(server)) retry.stop();
           });
           retry.start();
         }
         return;
       }
       candidates.addAll(tables);
+    } else if (qualifier != null && ref != null) {
+      if (ref.table() != null) {
+        String key = ref.table().source() + "." + ref.table().table();
+        List<String> columns = COLUMN_CACHE.get(key);
+        if (columns == null) {
+          if (allowLoad) {
+            status.setText(" Carregando colunas de " + key + "...");
+            int originalCaret = caret;
+            fetchColumns(ref.table().source(), ref.table().table(), null);
+            javax.swing.Timer retry = new javax.swing.Timer(250, null);
+            final int[] attempts = {0};
+            retry.addActionListener(event -> {
+              if (!editor.isShowing() || editor.getCaretPosition() != originalCaret || ++attempts[0] > 24) retry.stop();
+              else if (COLUMN_CACHE.containsKey(key)) { retry.stop(); showCompletions(editor, false); }
+              else if (!COLUMN_LOADING.contains(key)) retry.stop();
+            });
+            retry.start();
+          }
+          return;
+        }
+        candidates.addAll(columns);
+      } else if (ref.cte() != null) {
+        candidates.addAll(context.cteColumns(ref.cte()));
+        if (candidates.isEmpty()) {
+          status.setText(" CTE '" + ref.cte() + "': nao foi possivel inferir as colunas. Use nomes explicitos ou AS na projecao.");
+          return;
+        }
+      }
     } else if (qualifier != null) {
-      // Expressao qualificada: nunca misturar keywords e tabelas quando o alias nao foi localizado.
-      status.setText(" Alias '" + qualifier + "' nao encontrado. Confira o FROM/JOIN e a conexao.");
+      status.setText(" Qualificador '" + qualifier + "' nao encontrado em FROM/JOIN desta consulta.");
       return;
     } else {
       Collections.addAll(candidates, SQL_WORDS);
       candidates.addAll(SOURCES.keySet());
+      candidates.addAll(context.cteNames());
       for (List<String> tables : TABLE_CACHE.values()) candidates.addAll(tables);
-      if (allowLoad) for (String server : SOURCES.keySet()) fetchTables(server, null);
-
-      // Sugestao de colunas a partir de tabelas explicitamente citadas na consulta.
-      java.util.regex.Matcher tablesInSql = java.util.regex.Pattern.compile(
-          "(?i)\\b(?:FROM|JOIN)\\s+([a-z][a-z0-9_]*)\\.\\\"?([a-z0-9_]+)\\\"?").matcher(contextSql);
-      while (tablesInSql.find()) {
-        String server = resolveSource(tablesInSql.group(1));
-        if (server == null) continue;
-        String table = tablesInSql.group(2);
-        String key = server + "." + table;
-        List<String> columns = COLUMN_CACHE.get(key);
-        if (columns != null) candidates.addAll(columns);
-        else if (allowLoad) fetchColumns(server, table, null);
+      if (allowLoad) for (String source : SOURCES.keySet()) fetchTables(source, null);
+      for (SqlCompletionContext.TableRef table : context.tables()) {
+        String key = table.source() + "." + table.table();
+        List<String> cols = COLUMN_CACHE.get(key);
+        if (cols != null) candidates.addAll(cols);
+        else if (allowLoad) fetchColumns(table.source(), table.table(), null);
       }
+      for (String cte : context.cteNames()) candidates.addAll(context.cteColumns(cte));
     }
 
     java.util.List<String> matches = new ArrayList<>();
@@ -2156,16 +2128,40 @@ public class Main {
     SwingUtilities.invokeLater(editor::requestFocusInWindow);
   }
 
+  private static String escapeHtml(String value) {
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+  }
+
   private static void showExplainDialog(String original, String command, boolean mysql,
                                         DefaultTableModel model, double seconds) {
-    JDialog dialog = new JDialog(frame, "Plano de execucao - " + (mysql ? "MySQL" : "Calcite"), false);
+    JDialog dialog = new JDialog(frame, "Analise do EXPLAIN - 1.8.1 - " + (mysql ? "MySQL" : "Calcite"), false);
     dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
     JPanel panel = new JPanel(new BorderLayout(8, 8));
     panel.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
     JLabel heading = new JLabel(String.format(DISPLAY_LOCALE,
         "%s  ·  %.2f s  ·  Plano estimado (consulta nao executada)",
         mysql ? "MySQL direto" : "Calcite federado", seconds));
-    panel.add(heading, BorderLayout.NORTH);
+    // A interpretacao fica sempre visivel acima do plano tecnico: nao depende de aba ou scroll oculto.
+    JPanel summary = new JPanel(new BorderLayout(4, 6));
+    summary.add(heading, BorderLayout.NORTH);
+    StringBuilder interpretation = new StringBuilder();
+    for (String message : ExplainInsights.summarize(model, mysql)) {
+      if (interpretation.length() > 0) interpretation.append('\n');
+      interpretation.append("• ").append(message);
+    }
+    JTextArea explanation = new JTextArea(interpretation.toString());
+    explanation.setEditable(false);
+    explanation.setLineWrap(true);
+    explanation.setWrapStyleWord(true);
+    explanation.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+    explanation.setBackground(UIManager.getColor("Panel.background"));
+    explanation.setForeground(UIManager.getColor("Label.foreground"));
+    explanation.setBorder(BorderFactory.createEmptyBorder(6, 8, 6, 8));
+    JScrollPane insightScroll = new JScrollPane(explanation);
+    insightScroll.setBorder(BorderFactory.createTitledBorder("Interpretação do EXPLAIN (português)"));
+    insightScroll.setPreferredSize(new Dimension(900, mysql ? 160 : 115));
+    summary.add(insightScroll, BorderLayout.CENTER);
+    panel.add(summary, BorderLayout.NORTH);
     if (!mysql && model.getColumnCount() == 1) {
       StringBuilder planText = new StringBuilder();
       for (int i = 0; i < model.getRowCount(); i++) {

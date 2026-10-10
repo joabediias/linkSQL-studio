@@ -127,27 +127,11 @@ public class Main {
     String limit = size == 0 && window.maxRows() == null ? "18446744073709551615" : Long.toString(amount);
     return direct.sql() + " LIMIT " + limit + " OFFSET " + offset;
   }
-  // Apenas SELECTs simples de um unico servidor sao enviados diretamente ao MySQL.
-  // Consultas federadas, CTEs e construcoes nao reconhecidas continuam no Calcite.
+  // Analise lexical conservadora: permite JOIN, CTE e subconsulta de um unico servidor,
+  // sem reescrever strings/comentarios; ambiguidades continuam no Calcite.
   private static DirectSql directSql(String sql) {
-    String trimmed = sqlWindow(sql).baseSql();
-    if (!trimmed.matches("(?is)^SELECT\\s+.*")) return null;
-    if (trimmed.matches("(?is).*\\b(?:WITH|UNION|INTERSECT|EXCEPT|FETCH|OFFSET|JOIN|EXISTS)\\b.*")) return null;
-    if (trimmed.indexOf(';') >= 0 || trimmed.split("(?i)\\bSELECT\\b", -1).length != 2) return null;
-    java.util.regex.Matcher refs = java.util.regex.Pattern.compile(
-        "(?i)\\b(?:FROM|JOIN)\\s+([A-Za-z_][A-Za-z0-9_]*)\\.([`\"A-Za-z0-9_]+)").matcher(trimmed);
-    String source = null;
-    int count = 0;
-    while (refs.find()) {
-      String resolved = resolveSource(refs.group(1));
-      if (resolved == null || (source != null && !source.equals(resolved))) return null;
-      source = resolved; count++;
-    }
-    if (source == null || count != 1) return null;
-    String cleaned = trimmed.replaceAll("(?i)\\b" + java.util.regex.Pattern.quote(source) + "\\.", "");
-    // Restrito a uma tabela: sem subconsultas, joins ou referencias cruzadas.
-    if (cleaned.matches("(?is).*\\b(?:JOIN|FROM)\\s*\\(.*")) return null;
-    return new DirectSql(source, cleaned);
+    SingleServerSqlRouter.Route route = SingleServerSqlRouter.route(sqlWindow(sql).baseSql(), SOURCES.keySet());
+    return route == null ? null : new DirectSql(route.source(), route.sql());
   }
   private static Connection queryConnectionFor(String sql) throws SQLException {
     DirectSql direct = directSql(sql);
@@ -301,7 +285,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 1.5.5");
+    frame = new JFrame("SantySQL Studio - 1.6");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -1778,20 +1762,7 @@ public class Main {
           stmt.setQueryTimeout(120);
           configureFetch(stmt, sql, size);
           try (ResultSet rs = stmt.executeQuery(pagedSql)) {
-            ResultSetMetaData meta = rs.getMetaData();
-            String[] columns = new String[meta.getColumnCount()];
-            for (int i = 0; i < columns.length; i++) columns[i] = meta.getColumnLabel(i + 1);
-            DefaultTableModel model = new DefaultTableModel(columns, 0) {
-              public boolean isCellEditable(int row, int col) { return false; }
-            };
-            while (!isCancelled() && !Thread.currentThread().isInterrupted()
-                && (size == 0 || model.getRowCount() < size) && rs.next()) {
-              Object[] row = new Object[columns.length];
-              for (int i = 0; i < row.length; i++) row[i] = rs.getObject(i + 1);
-              model.addRow(row);
-            }
-            if (isCancelled()) throw new java.util.concurrent.CancellationException();
-            return model;
+            return readResultModel(rs, size, this::isCancelled);
           }
         } finally {
           RUNNING_STATEMENT.compareAndSet(stmt, null);
@@ -1938,6 +1909,28 @@ public class Main {
     return result.toString();
   }
 
+  // Monta o modelo fora da EDT sem disparar um evento Swing a cada registro.
+  // Especialmente importante quando Linhas/pagina = 100.000 ou Todas.
+  private static DefaultTableModel readResultModel(ResultSet rs, int pageSize,
+      java.util.function.BooleanSupplier cancelled) throws SQLException {
+    ResultSetMetaData meta = rs.getMetaData();
+    int width = meta.getColumnCount();
+    Vector<String> headers = new Vector<>(width);
+    for (int i = 1; i <= width; i++) headers.add(meta.getColumnLabel(i));
+    Vector<Vector<Object>> rows = new Vector<>();
+    while (!cancelled.getAsBoolean() && !Thread.currentThread().isInterrupted()
+        && (pageSize == 0 || rows.size() < pageSize) && rs.next()) {
+      Vector<Object> row = new Vector<>(width);
+      for (int i = 1; i <= width; i++) row.add(rs.getObject(i));
+      rows.add(row);
+    }
+    if (cancelled.getAsBoolean() || Thread.currentThread().isInterrupted())
+      throw new java.util.concurrent.CancellationException("Consulta cancelada");
+    return new DefaultTableModel(rows, headers) {
+      public boolean isCellEditable(int row, int col) { return false; }
+    };
+  }
+
   private static void runQuery() {
     JTextArea queryEditor = activeEditor();
     if (federation == null) { status.setText(" Carregue as conexões primeiro."); queryEditor.requestFocusInWindow(); return; }
@@ -1956,7 +1949,7 @@ public class Main {
     cancelQueryButton.setEnabled(true);
     CANCEL_REQUESTED.set(false);
     final long started = System.nanoTime();
-    status.setText(" Executando consulta... Os resultados anteriores serao preservados.");
+    status.setText(" Executando consulta...");
     final long[] phases = new long[3]; // conexão, execução SQL, leitura
     currentQuery = new SwingWorker<DefaultTableModel, Void>() {
       protected DefaultTableModel doInBackground() throws Exception {
@@ -1978,19 +1971,7 @@ public class Main {
           try (ResultSet rs = stmt.executeQuery(firstPageSql(query, pageSize))) {
             phases[1] = System.nanoTime() - sqlStarted;
             long readStarted = System.nanoTime();
-            ResultSetMetaData meta = rs.getMetaData();
-            String[] headers = new String[meta.getColumnCount()];
-            for (int i = 0; i < headers.length; i++) headers[i] = meta.getColumnLabel(i + 1);
-            DefaultTableModel model = new DefaultTableModel(headers, 0) {
-              public boolean isCellEditable(int row, int col) { return false; }
-            };
-            while (!Thread.currentThread().isInterrupted() && !isCancelled()
-                && (pageSize == 0 || model.getRowCount() < pageSize) && rs.next()) {
-              Object[] row = new Object[headers.length];
-              for (int i = 0; i < row.length; i++) row[i] = rs.getObject(i + 1);
-              model.addRow(row);
-            }
-            if (isCancelled() || Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("Consulta cancelada");
+            DefaultTableModel model = readResultModel(rs, pageSize, this::isCancelled);
             phases[2] = System.nanoTime() - readStarted;
             return model;
           }
@@ -2019,8 +2000,9 @@ public class Main {
               "Conexão %.2f s | SQL %.2f s | Leitura %.2f s",
               phases[0] / 1e9, phases[1] / 1e9, phases[2] / 1e9);
           status.setText(" Consulta: " + formatRowCount(model.getRowCount()) + " linhas em "
-              + String.format(Locale.ROOT, "%.2f s", elapsed) + " | " + details);
-          status.setToolTipText(details + " | " + (directSql(query) == null ? "Calcite" : "MySQL direto"));
+              + String.format(Locale.ROOT, "%.2f s", elapsed) + " | " + details
+              + " | " + (directSql(query) == null ? "Calcite federado" : "MySQL direto"));
+          status.setToolTipText(details + " | " + (directSql(query) == null ? "Calcite federado" : "MySQL direto"));
         } catch (Exception ex) {
           if (CANCEL_REQUESTED.get()) status.setText(" Consulta cancelada. Resultados anteriores preservados.");
           else { status.setText(" Falha na consulta. Resultados anteriores preservados."); showError(ex); }
@@ -2102,17 +2084,7 @@ public class Main {
             int updated = -1;
             if (hasResult) {
               try (ResultSet rs = stmt.getResultSet()) {
-                ResultSetMetaData meta = rs.getMetaData();
-                String[] headers = new String[meta.getColumnCount()];
-                for (int i = 0; i < headers.length; i++) headers[i] = meta.getColumnLabel(i + 1);
-                model = new DefaultTableModel(headers, 0) {
-                  public boolean isCellEditable(int row, int col) { return false; }
-                };
-                while (!isCancelled() && !Thread.currentThread().isInterrupted() && (pageSize == 0 || model.getRowCount() < pageSize) && rs.next()) {
-                  Object[] row = new Object[headers.length];
-                  for (int i = 0; i < row.length; i++) row[i] = rs.getObject(i + 1);
-                  model.addRow(row);
-                }
+                model = readResultModel(rs, pageSize, this::isCancelled);
               }
             } else updated = stmt.getUpdateCount();
             if (isCancelled() || Thread.currentThread().isInterrupted()) break;

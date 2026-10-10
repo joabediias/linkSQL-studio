@@ -32,24 +32,21 @@ import java.nio.file.*;
 import java.sql.*;
 import java.util.*;
 import java.util.List;
-import java.util.prefs.Preferences;
+import static br.com.santysqlstudio.SqlQueryPlanner.*;
+import br.com.santysqlstudio.SqlQueryPlanner.DirectSql;
+import br.com.santysqlstudio.SqlQueryPlanner.SqlWindow;
 
 public class Main {
   private static final ObjectMapper JSON = new ObjectMapper();
-  private static final Map<String, BasicDataSource> SOURCES = new LinkedHashMap<>();
+  private static final SqlConnectionRegistry CONNECTIONS = new SqlConnectionRegistry();
+  private static final Map<String, BasicDataSource> SOURCES = CONNECTIONS.sources();
   private static Connection federation;
   private static Path configPath = Paths.get("config", "connections.example.json");
-  private static final int DEFAULT_PAGE_SIZE = 1000;
-  private static final Locale DISPLAY_LOCALE = Locale.forLanguageTag("pt-BR");
-  private static final int MAX_PAGE_SIZE = 100000;
-  private static final Preferences PREFS = Preferences.userNodeForPackage(Main.class);
-  // Zero representa "Todas em uma página"; valores positivos respeitam o limite de 100 a 100.000.
-  private static int preferredPageSize = savedPageSize();
-  private static int savedPageSize() {
-    int saved = PREFS.getInt("rowsPerPage", DEFAULT_PAGE_SIZE);
-    return saved == 0 ? 0 : Math.max(100, Math.min(MAX_PAGE_SIZE, saved));
-  }
-  private static boolean darkMode = PREFS.getBoolean("darkMode", true);
+  private static final int DEFAULT_PAGE_SIZE = StudioSettings.DEFAULT_PAGE_SIZE;
+  private static final int MAX_PAGE_SIZE = StudioSettings.MAX_PAGE_SIZE;
+  private static final Locale DISPLAY_LOCALE = StudioSettings.DISPLAY_LOCALE;
+  private static int preferredPageSize = StudioSettings.pageSize();
+  private static boolean darkMode = StudioSettings.darkMode();
   private static JFrame frame;
   private static JButton themeButton;
   private static JPanel toolbar;
@@ -77,37 +74,21 @@ public class Main {
       java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "santysql-count"); t.setDaemon(true); return t;
       });
-  private record DirectSql(String source, String sql) {}
-  // Extrai apenas limites finais simples, preservando a consulta original no editor.
-  // O limite SQL e o tamanho de pagina sao coisas distintas.
-  private record SqlWindow(String baseSql, Long maxRows, long startOffset) {}
-  private static SqlWindow sqlWindow(String sql) {
-    String text = sql.trim();
-    java.util.regex.Matcher m = java.util.regex.Pattern.compile(
-        "(?is)^(.+?)\\s+OFFSET\\s+(\\d+)\\s+ROWS?\\s+FETCH\\s+(?:FIRST|NEXT)\\s+(\\d+)\\s+ROWS?\\s+ONLY$").matcher(text);
-    if (m.matches()) return new SqlWindow(m.group(1).trim(), Long.parseLong(m.group(3)), Long.parseLong(m.group(2)));
-    m = java.util.regex.Pattern.compile(
-        "(?is)^(.+?)\\s+FETCH\\s+(?:FIRST|NEXT)\\s+(\\d+)\\s+ROWS?\\s+ONLY$").matcher(text);
-    if (m.matches()) return new SqlWindow(m.group(1).trim(), Long.parseLong(m.group(2)), 0L);
-    m = java.util.regex.Pattern.compile("(?is)^(.+?)\\s+LIMIT\\s+(\\d+)\\s+OFFSET\\s+(\\d+)$").matcher(text);
-    if (m.matches()) return new SqlWindow(m.group(1).trim(), Long.parseLong(m.group(2)), Long.parseLong(m.group(3)));
-    m = java.util.regex.Pattern.compile("(?is)^(.+?)\\s+LIMIT\\s+(\\d+)\\s*,\\s*(\\d+)$").matcher(text);
-    if (m.matches()) return new SqlWindow(m.group(1).trim(), Long.parseLong(m.group(3)), Long.parseLong(m.group(2)));
-    m = java.util.regex.Pattern.compile("(?is)^(.+?)\\s+LIMIT\\s+(\\d+)$").matcher(text);
-    if (m.matches()) return new SqlWindow(m.group(1).trim(), Long.parseLong(m.group(2)), 0L);
-    return new SqlWindow(text, null, 0L);
-  }
   private static int resultPageSize(JScrollPane scroll) {
     Object size = scroll.getClientProperty("pageSize");
     return size instanceof Integer n ? n : preferredPageSize;
   }
-  private static String formatPageSize(int size) {
-    return size == 0 ? "Todas (1 página)" : String.format(new Locale("pt", "BR"), "%,d", size);
-  }
+  private static String formatPageSize(int size) { return StudioSettings.formatPageSize(size); }
   private static String firstPageSql(String sql, int size) {
     DirectSql direct = directSql(sql);
     if (direct == null) return sql;
     return directPageSql(direct, sqlWindow(sql), 0, size);
+  }
+  private static DirectSql directSql(String sql) {
+    return SqlQueryPlanner.directSql(sql, SOURCES.keySet());
+  }
+  private static String executableSql(String sql) {
+    return SqlQueryPlanner.executableSql(sql, SOURCES.keySet());
   }
   // MySQL Connector/J: modo streaming apenas em leituras diretas ilimitadas.
   // Reduz a duplicação do resultado na memória do driver antes de montar a grade.
@@ -116,35 +97,9 @@ public class Main {
       stmt.setFetchSize(Integer.MIN_VALUE);
     }
   }
-  private static String directPageSql(DirectSql direct, SqlWindow window, int page, int size) {
-    long skipped = (long) page * size;
-    long amount = size == 0 ? (window.maxRows() == null ? 0L : window.maxRows())
-        : window.maxRows() == null ? size : Math.max(0L, Math.min((long) size, window.maxRows() - skipped));
-    long offset = Math.addExact(window.startOffset(), skipped);
-    if (size == 0 && window.maxRows() == null && offset == 0L) return direct.sql();
-    // LIMIT de um inteiro positivo mantém o teto do SQL; para OFFSET puro,
-    // o MySQL exige um limite sintático (máximo de BIGINT UNSIGNED).
-    String limit = size == 0 && window.maxRows() == null ? "18446744073709551615" : Long.toString(amount);
-    return direct.sql() + " LIMIT " + limit + " OFFSET " + offset;
-  }
-  // Analise lexical conservadora: permite JOIN, CTE e subconsulta de um unico servidor,
-  // sem reescrever strings/comentarios; ambiguidades continuam no Calcite.
-  private static DirectSql directSql(String sql) {
-    SingleServerSqlRouter.Route route = SingleServerSqlRouter.route(sqlWindow(sql).baseSql(), SOURCES.keySet());
-    return route == null ? null : new DirectSql(route.source(), route.sql());
-  }
   private static Connection queryConnectionFor(String sql) throws SQLException {
     DirectSql direct = directSql(sql);
     return direct == null ? openQueryConnection() : SOURCES.get(direct.source()).getConnection();
-  }
-  private static String executableSql(String sql) {
-    DirectSql direct = directSql(sql);
-    if (direct == null) return sql;
-    SqlWindow window = sqlWindow(sql);
-    if (window.maxRows() != null) {
-      return direct.sql() + " LIMIT " + window.maxRows() + " OFFSET " + window.startOffset();
-    }
-    return direct.sql();
   }
   private static java.util.Map<Integer, DefaultTableModel> pageCache(JScrollPane scroll) {
     @SuppressWarnings("unchecked")
@@ -225,8 +180,6 @@ public class Main {
   private static final Map<Component, Path> OPEN_FILES = new IdentityHashMap<>();
   private static JTextField tableSearch;
   private static final Map<Component, String> SAVED_TEXT = new IdentityHashMap<>();
-  private static final Path HISTORY_FILE = Paths.get(System.getProperty("user.home"), ".santysql-studio", "sql-history.txt");
-  private static final int HISTORY_LIMIT = 100;
   private static final Path SESSION_FILE = Paths.get(System.getProperty("user.home"), ".santysql-studio", "sql-session.json");
   private static boolean restoringSession = false;
   private static boolean shuttingDown = false;
@@ -259,7 +212,7 @@ public class Main {
 
   private static void toggleTheme() {
     darkMode = !darkMode;
-    PREFS.putBoolean("darkMode", darkMode);
+    StudioSettings.setDarkMode(darkMode);
     try {
       applyLookAndFeel();
       SwingUtilities.updateComponentTreeUI(frame);
@@ -285,7 +238,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 1.9");
+    frame = new JFrame("SantySQL Studio - 2.0");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -556,7 +509,7 @@ public class Main {
     status = new JLabel(" Carregue as conexões para iniciar. | " + formatPageSize(preferredPageSize) + " linhas por página");
     status.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
     JPanel top = new JPanel(new BorderLayout());
-    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado   ·   v1.9");
+    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado   ·   v2.0");
     brand.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 15));
     brand.setBorder(BorderFactory.createEmptyBorder(12, 10, 8, 10));
     top.add(brand, BorderLayout.NORTH);
@@ -934,28 +887,16 @@ public class Main {
   }
 
   private static List<String> readHistory() {
-    if (!Files.exists(HISTORY_FILE)) return new ArrayList<>();
-    try {
-      List<String> entries = new ArrayList<>();
-      for (String line : Files.readAllLines(HISTORY_FILE, StandardCharsets.UTF_8)) {
-        try { entries.add(new String(Base64.getDecoder().decode(line), StandardCharsets.UTF_8)); }
-        catch (IllegalArgumentException ignored) { }
-      }
-      return entries;
-    } catch (IOException ex) { return new ArrayList<>(); }
+    try { return SqlHistoryStore.read(); }
+    catch (IOException ex) { StudioLog.error("Ler histórico SQL", ex); return new ArrayList<>(); }
   }
 
   private static void rememberQuery(String sql) {
-    try {
-      List<String> entries = readHistory();
-      entries.remove(sql);
-      entries.add(0, sql);
-      if (entries.size() > HISTORY_LIMIT) entries = new ArrayList<>(entries.subList(0, HISTORY_LIMIT));
-      Files.createDirectories(HISTORY_FILE.getParent());
-      List<String> encoded = new ArrayList<>();
-      for (String entry : entries) encoded.add(Base64.getEncoder().encodeToString(entry.getBytes(StandardCharsets.UTF_8)));
-      Files.write(HISTORY_FILE, encoded, StandardCharsets.UTF_8);
-    } catch (IOException ex) { status.setText(" Aviso: não foi possível salvar o histórico SQL."); }
+    try { SqlHistoryStore.remember(sql); }
+    catch (IOException ex) {
+      StudioLog.error("Salvar histórico SQL", ex);
+      status.setText(" Aviso: não foi possível salvar o histórico SQL.");
+    }
   }
 
   private static void showHistory() {
@@ -1626,20 +1567,7 @@ public class Main {
   }
 
   private static Connection openQueryConnection() throws SQLException {
-    Connection connection = DriverManager.getConnection("jdbc:calcite:caseSensitive=false");
-    try {
-      SchemaPlus schemas = connection.unwrap(CalciteConnection.class).getRootSchema();
-      synchronized (Main.class) {
-        for (Map.Entry<String, BasicDataSource> source : SOURCES.entrySet()) {
-          schemas.add(source.getKey(), JdbcSchema.create(schemas, source.getKey(), source.getValue(), null, null));
-        }
-      }
-      return connection;
-    } catch (Exception ex) {
-      try { connection.close(); } catch (SQLException ignored) {}
-      if (ex instanceof SQLException sqlEx) throw sqlEx;
-      throw new SQLException("Falha ao preparar conexao federada da consulta", ex);
-    }
+    return CONNECTIONS.openFederatedQueryConnection();
   }
 
   private static void cancelRunningQuery() {
@@ -1767,13 +1695,6 @@ public class Main {
     selectResultTab();
   }
 
-  private static boolean isPageableSql(String sql) {
-    String normalized = sql.stripLeading().toUpperCase(Locale.ROOT);
-    if (!(normalized.startsWith("SELECT ") || normalized.startsWith("WITH "))) return false;
-    SqlWindow window = sqlWindow(sql);
-    return window.maxRows() != null || !normalized.matches("(?s).*\\b(?:FETCH\\s+(?:FIRST|NEXT)|LIMIT|OFFSET)\\b.*");
-  }
-
   private static void trimResultTabs(int count) {
     while (resultTabs.getTabCount() > count) resultTabs.removeTabAt(resultTabs.getTabCount() - 1);
     selectResultTab();
@@ -1817,7 +1738,7 @@ public class Main {
       }
     }
     preferredPageSize = chosen;
-    PREFS.putInt("rowsPerPage", chosen);
+    StudioSettings.setPageSize(chosen);
     if (scroll != null && resultTabs.indexOfComponent(scroll) >= 0 && resultPageSize(scroll) != chosen) {
       scroll.putClientProperty("pageSize", chosen);
       scroll.putClientProperty("countTicket", new Object());
@@ -1942,7 +1863,7 @@ public class Main {
           stmt.setQueryTimeout(120);
           configureFetch(stmt, sql, size);
           try (ResultSet rs = stmt.executeQuery(pagedSql)) {
-            return readResultModel(rs, size, this::isCancelled);
+            return SqlResultModels.readResultModel(rs, size, this::isCancelled);
           }
         } finally {
           RUNNING_STATEMENT.compareAndSet(stmt, null);
@@ -2089,28 +2010,6 @@ public class Main {
     return result.toString();
   }
 
-  // Monta o modelo fora da EDT sem disparar um evento Swing a cada registro.
-  // Especialmente importante quando Linhas/pagina = 100.000 ou Todas.
-  private static DefaultTableModel readResultModel(ResultSet rs, int pageSize,
-      java.util.function.BooleanSupplier cancelled) throws SQLException {
-    ResultSetMetaData meta = rs.getMetaData();
-    int width = meta.getColumnCount();
-    Vector<String> headers = new Vector<>(width);
-    for (int i = 1; i <= width; i++) headers.add(meta.getColumnLabel(i));
-    Vector<Vector<Object>> rows = new Vector<>();
-    while (!cancelled.getAsBoolean() && !Thread.currentThread().isInterrupted()
-        && (pageSize == 0 || rows.size() < pageSize) && rs.next()) {
-      Vector<Object> row = new Vector<>(width);
-      for (int i = 1; i <= width; i++) row.add(rs.getObject(i));
-      rows.add(row);
-    }
-    if (cancelled.getAsBoolean() || Thread.currentThread().isInterrupted())
-      throw new java.util.concurrent.CancellationException("Consulta cancelada");
-    return new DefaultTableModel(rows, headers) {
-      public boolean isCellEditable(int row, int col) { return false; }
-    };
-  }
-
   private static void runQuery() {
     JTextArea queryEditor = activeEditor();
     if (federation == null) { status.setText(" Carregue as conexões primeiro."); queryEditor.requestFocusInWindow(); return; }
@@ -2151,7 +2050,7 @@ public class Main {
           try (ResultSet rs = stmt.executeQuery(firstPageSql(query, pageSize))) {
             phases[1] = System.nanoTime() - sqlStarted;
             long readStarted = System.nanoTime();
-            DefaultTableModel model = readResultModel(rs, pageSize, this::isCancelled);
+            DefaultTableModel model = SqlResultModels.readResultModel(rs, pageSize, this::isCancelled);
             phases[2] = System.nanoTime() - readStarted;
             return model;
           }
@@ -2253,7 +2152,7 @@ public class Main {
           stmt.setQueryTimeout(120);
           if (isCancelled()) throw new java.util.concurrent.CancellationException("EXPLAIN cancelado");
           try (ResultSet rs = stmt.executeQuery(explainCommand)) {
-            return readResultModel(rs, 1000, this::isCancelled);
+            return SqlResultModels.readResultModel(rs, 1000, this::isCancelled);
           }
         } finally {
           RUNNING_STATEMENT.compareAndSet(stmt, null);
@@ -2469,7 +2368,7 @@ public class Main {
             int updated = -1;
             if (hasResult) {
               try (ResultSet rs = stmt.getResultSet()) {
-                model = readResultModel(rs, pageSize, this::isCancelled);
+                model = SqlResultModels.readResultModel(rs, pageSize, this::isCancelled);
               }
             } else updated = stmt.getUpdateCount();
             if (isCancelled() || Thread.currentThread().isInterrupted()) break;
@@ -2537,7 +2436,6 @@ public class Main {
     if (JOptionPane.showConfirmDialog(frame, options, "Opcoes de exportacao CSV",
         JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) return;
     char separator = separators.getSelectedIndex() == 1 ? ',' : separators.getSelectedIndex() == 2 ? '|' : ';';
-    int quoteMode = includeQuote.isSelected() ? 0 : 1;
     java.nio.charset.Charset charset = encodings.getSelectedIndex() == 1
         ? java.nio.charset.StandardCharsets.ISO_8859_1 : StandardCharsets.UTF_8;
     JFileChooser chooser = new JFileChooser();
@@ -2549,32 +2447,10 @@ public class Main {
     if (Files.exists(path) && JOptionPane.showConfirmDialog(frame,
         "Sobrescrever " + path.getFileName() + "?", "Confirmar",
         JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
-    try (BufferedWriter out = Files.newBufferedWriter(path, charset)) {
-      if (header.isSelected()) {
-        for (int c = 0; c < table.getColumnCount(); c++) {
-          if (c > 0) out.write(separator);
-          out.write(csv(table.getColumnName(c), separator, quoteMode));
-        }
-        out.newLine();
-      }
-      for (int r = 0; r < table.getRowCount(); r++) {
-        for (int c = 0; c < table.getColumnCount(); c++) {
-          if (c > 0) out.write(separator);
-          Object value = table.getValueAt(r, c);
-          out.write(csv(value == null ? "" : value.toString(), separator, quoteMode));
-        }
-        out.newLine();
-      }
+    try {
+      CsvExportWriter.write(table, path, charset, separator, header.isSelected(), includeQuote.isSelected());
       status.setText(" CSV exportado: " + path + " (" + table.getRowCount() + " linhas exibidas).");
     } catch (Exception ex) { showError(ex); }
-  }
-
-  private static String csv(String value, char separator, int quoteMode) {
-    if (quoteMode == 2) return value;
-    boolean required = value.indexOf(separator) >= 0 || value.indexOf('"') >= 0
-        || value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0;
-    if (quoteMode == 1 && !required) return value;
-    return "\"" + value.replace("\"", "\"\"") + "\"";
   }
 
   private static void manageConnections() {
@@ -2628,48 +2504,15 @@ public class Main {
   }
 
   private static synchronized void configure(Path path) throws Exception {
-    JsonNode root = JSON.readTree(Files.readString(path));
-    Map<String, BasicDataSource> nextSources = new LinkedHashMap<>();
-    Connection next = DriverManager.getConnection("jdbc:calcite:caseSensitive=false");
-    try {
-      SchemaPlus schemas = next.unwrap(CalciteConnection.class).getRootSchema();
-      Set<String> names = new HashSet<>();
-      for (JsonNode item : root.path("connections")) {
-        String name = item.path("name").asText();
-        if (!name.matches("[A-Za-z][A-Za-z0-9_]*") || !names.add(name.toUpperCase(Locale.ROOT)))
-          throw new IllegalArgumentException("Nome inválido ou duplicado: " + name);
-        String passwordEnv = item.path("passwordEnv").asText();
-        String password = System.getenv(passwordEnv);
-        if (password == null) throw new IllegalArgumentException("Variável de ambiente ausente: " + passwordEnv);
-        BasicDataSource ds = new BasicDataSource();
-        ds.setDriverClassName("com.mysql.cj.jdbc.Driver");
-        ds.setUrl("jdbc:mysql://" + item.path("host").asText() + ":" + item.path("port").asInt(4407) + "/" + item.path("database").asText() + "?useSSL=false&connectTimeout=5000&socketTimeout=120000");
-        ds.setUsername(item.path("user").asText());
-        ds.setPassword(password);
-        ds.setMaxTotal(2); ds.setMaxIdle(1); ds.setInitialSize(0);
-        nextSources.put(name, ds);
-        schemas.add(name, JdbcSchema.create(schemas, name, ds, null, null));
-      }
-      Connection previous = federation;
-      Map<String, BasicDataSource> old = new LinkedHashMap<>(SOURCES);
-      federation = next;
-      SOURCES.clear(); SOURCES.putAll(nextSources);
-      TABLE_CACHE.clear(); COLUMN_CACHE.clear();
-      if (previous != null) previous.close();
-      for (BasicDataSource ds : old.values()) try { ds.close(); } catch (SQLException ignored) {}
-    } catch (Exception ex) {
-      next.close();
-      for (BasicDataSource ds : nextSources.values()) try { ds.close(); } catch (SQLException ignored) {}
-      throw ex;
-    }
+    federation = CONNECTIONS.configure(path);
+    TABLE_CACHE.clear();
+    COLUMN_CACHE.clear();
   }
 
-  private static void closeResources() {
-    try { if (federation != null) federation.close(); } catch (Exception ignored) {}
-    for (BasicDataSource ds : SOURCES.values()) try { ds.close(); } catch (SQLException ignored) {}
-  }
+  private static void closeResources() { CONNECTIONS.close(); }
 
   private static void showError(Exception ex) {
+    StudioLog.error("Operação do SantySQL Studio", ex);
     Throwable cause = ex;
     while (cause.getCause() != null) cause = cause.getCause();
     JOptionPane.showMessageDialog(frame, String.valueOf(cause.getMessage()), "Erro", JOptionPane.ERROR_MESSAGE);

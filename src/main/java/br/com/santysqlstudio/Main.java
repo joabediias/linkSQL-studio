@@ -47,6 +47,10 @@ public class Main {
   private static final Locale DISPLAY_LOCALE = StudioSettings.DISPLAY_LOCALE;
   private static int preferredPageSize = StudioSettings.pageSize();
   private static boolean darkMode = StudioSettings.darkMode();
+  private static boolean automaticCompletion = StudioSettings.automaticCompletion();
+  private static int completionDelayMs = StudioSettings.completionDelayMs();
+  private static int sqlFontSize = StudioSettings.sqlFontSize();
+  private static int resultFilterDelayMs = StudioSettings.resultFilterDelayMs();
   private static JFrame frame;
   private static JButton themeButton;
   private static JPanel toolbar;
@@ -213,16 +217,65 @@ public class Main {
   private static void toggleTheme() {
     darkMode = !darkMode;
     StudioSettings.setDarkMode(darkMode);
+    refreshTheme();
+  }
+
+  private static void refreshTheme() {
     try {
       applyLookAndFeel();
       SwingUtilities.updateComponentTreeUI(frame);
-      for (int i = 0; i < tabs.getTabCount(); i++) {
-        RSyntaxTextArea editor = (RSyntaxTextArea) ((JScrollPane) tabs.getComponentAt(i)).getViewport().getView();
+      for (int i = 0; tabs != null && i < tabs.getTabCount(); i++) {
+        RSyntaxTextArea editor = editorOf(tabs.getComponentAt(i));
         styleEditor(editor);
+        editor.setFont(new Font(Font.MONOSPACED, Font.PLAIN, sqlFontSize));
       }
       themeButton.setText(darkMode ? "☀  Tema claro" : "☾  Tema escuro");
       frame.repaint();
     } catch (Exception ex) { showError(ex); }
+  }
+
+  private static void openSettings() {
+    StudioSettings.Snapshot options = StudioSettingsDialog.show(frame, StudioSettings.snapshot());
+    if (options == null) return;
+    if (currentQuery != null && !currentQuery.isDone() && options.pageSize() != preferredPageSize) {
+      JOptionPane.showMessageDialog(frame,
+          "Aguarde o fim da consulta antes de alterar a preferência de paginação.",
+          "Consulta em andamento", JOptionPane.INFORMATION_MESSAGE);
+      return;
+    }
+    if (options.pageSize() == 0 && preferredPageSize != 0) {
+      int answer = JOptionPane.showConfirmDialog(frame,
+          "A opção Todas (1 página) pode carregar muitos registros na memória.\n"
+              + "Essa preferência será aplicada nas próximas execuções. Continuar?",
+          "Aviso de memória", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+      if (answer != JOptionPane.YES_OPTION) return;
+    }
+    StudioSettings.save(options);
+    boolean changedTheme = darkMode != options.darkMode();
+    darkMode = options.darkMode();
+    preferredPageSize = options.pageSize();
+    automaticCompletion = options.automaticCompletion();
+    completionDelayMs = options.completionDelayMs();
+    sqlFontSize = options.sqlFontSize();
+    resultFilterDelayMs = options.resultFilterDelayMs();
+    if (resultFilterDebounce != null) {
+      resultFilterDebounce.setDelay(resultFilterDelayMs);
+      resultFilterDebounce.setInitialDelay(resultFilterDelayMs);
+    }
+    for (int i = 0; tabs != null && i < tabs.getTabCount(); i++) {
+      RSyntaxTextArea editor = editorOf(tabs.getComponentAt(i));
+      editor.setFont(new Font(Font.MONOSPACED, Font.PLAIN, sqlFontSize));
+      Object timer = editor.getClientProperty("automaticCompletionTimer");
+      if (timer instanceof javax.swing.Timer t) {
+        t.setDelay(completionDelayMs);
+        t.setInitialDelay(completionDelayMs);
+        if (!automaticCompletion) t.stop();
+      }
+      if (!automaticCompletion) closeCompletion(editor);
+    }
+    if (changedTheme) refreshTheme();
+    updatePageControls();
+    status.setText(" Preferências salvas. Tamanho da página aplicado às próximas consultas.");
   }
 
   private static void styleEditor(RSyntaxTextArea area) {
@@ -238,7 +291,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 2.0");
+    frame = new JFrame("SantySQL Studio - 2.1");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -348,8 +401,13 @@ public class Main {
     connectionsMenu.add(structure);
     menuBar.add(connectionsMenu);
 
-    JMenu viewMenu = new JMenu("Aparencia");
+    JMenu viewMenu = new JMenu("Aparência");
     addMenuAction(viewMenu, "Alternar tema claro/escuro", themeButton);
+    viewMenu.addSeparator();
+    JMenuItem settingsMenu = new JMenuItem("Configurações... (Ctrl+,)");
+    settingsMenu.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_COMMA, InputEvent.CTRL_DOWN_MASK));
+    settingsMenu.addActionListener(e -> openSettings());
+    viewMenu.add(settingsMenu);
     menuBar.add(viewMenu);
     frame.setJMenuBar(menuBar);
 
@@ -454,8 +512,8 @@ public class Main {
     resultFilter.putClientProperty("JTextField.placeholderText", "Filtrar linhas do resultado selecionado...");
     resultFilter.setToolTipText("Filtra os dados ja carregados na aba selecionada; nao consulta novamente o servidor.");
     // A filtragem de 100 mil linhas no EDT a cada tecla trava a interface.
-    // Adiar por 300 ms permite digitar normalmente antes de recalcular a grade.
-    resultFilterDebounce = new javax.swing.Timer(300, e -> applyResultFilter());
+    // Aguardar um intervalo configurável permite digitar antes de recalcular a grade.
+    resultFilterDebounce = new javax.swing.Timer(resultFilterDelayMs, e -> applyResultFilter());
     resultFilterDebounce.setRepeats(false);
     resultFilter.getDocument().addDocumentListener(new DocumentListener() {
       public void insertUpdate(DocumentEvent e) { resultFilterDebounce.restart(); }
@@ -509,7 +567,7 @@ public class Main {
     status = new JLabel(" Carregue as conexões para iniciar. | " + formatPageSize(preferredPageSize) + " linhas por página");
     status.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
     JPanel top = new JPanel(new BorderLayout());
-    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado   ·   v2.0");
+    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado   ·   v2.1");
     brand.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 15));
     brand.setBorder(BorderFactory.createEmptyBorder(12, 10, 8, 10));
     top.add(brand, BorderLayout.NORTH);
@@ -550,7 +608,7 @@ public class Main {
     area.setBracketMatchingEnabled(true);
     area.setPaintTabLines(true);
     styleEditor(area);
-    area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 14));
+    area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, sqlFontSize));
     area.setTabSize(2);
     if (tabs.getTabCount() == 0) area.setText("SELECT *\nFROM SRV_ARRAIAL.cad_usu0\nFETCH NEXT 100 ROWS ONLY;");
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.CTRL_DOWN_MASK), "runSql");
@@ -569,7 +627,8 @@ public class Main {
       public void actionPerformed(ActionEvent e) {
         area.replaceSelection(".");
         SwingUtilities.invokeLater(() -> {
-          if (area.isShowing() && area.getSelectedText() == null) showCompletions(area);
+          if (automaticCompletion && area.isShowing() && area.getSelectedText() == null)
+            showCompletions(area);
         });
       }
     });
@@ -597,17 +656,19 @@ public class Main {
     tabs.addTab(title, scroll);
     SAVED_TEXT.put(scroll, area.getText());
     // Autocomplete de digitação: aguarda uma pausa e nunca bloqueia a escrita.
-    javax.swing.Timer completionDelay = new javax.swing.Timer(420, e -> {
-      if (area.isShowing() && area.isFocusOwner() && area.getSelectedText() == null)
+    javax.swing.Timer completionDelay = new javax.swing.Timer(completionDelayMs, e -> {
+      if (automaticCompletion && area.isShowing() && area.isFocusOwner()
+          && area.getSelectedText() == null)
         showCompletions(area, false, true);
     });
     completionDelay.setRepeats(false);
+    area.putClientProperty("automaticCompletionTimer", completionDelay);
     area.getDocument().addDocumentListener(new DocumentListener() {
       private void changed() {
         closeCompletion(area);
         updateDirtyTitle(scroll);
         scheduleSessionSave();
-        if (area.isShowing() && area.isFocusOwner()) completionDelay.restart();
+        if (automaticCompletion && area.isShowing() && area.isFocusOwner()) completionDelay.restart();
         else completionDelay.stop();
       }
       public void insertUpdate(DocumentEvent e) { SwingUtilities.invokeLater(this::changed); }

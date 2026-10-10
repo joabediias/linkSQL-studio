@@ -39,8 +39,16 @@ public class Main {
   private static final Map<String, BasicDataSource> SOURCES = new LinkedHashMap<>();
   private static Connection federation;
   private static Path configPath = Paths.get("config", "connections.example.json");
-  private static final int ROW_LIMIT = 1000;
+  private static final int DEFAULT_PAGE_SIZE = 1000;
+  private static final Locale DISPLAY_LOCALE = Locale.forLanguageTag("pt-BR");
+  private static final int MAX_PAGE_SIZE = 100000;
   private static final Preferences PREFS = Preferences.userNodeForPackage(Main.class);
+  // Zero representa "Todas em uma página"; valores positivos respeitam o limite de 100 a 100.000.
+  private static int preferredPageSize = savedPageSize();
+  private static int savedPageSize() {
+    int saved = PREFS.getInt("rowsPerPage", DEFAULT_PAGE_SIZE);
+    return saved == 0 ? 0 : Math.max(100, Math.min(MAX_PAGE_SIZE, saved));
+  }
   private static boolean darkMode = PREFS.getBoolean("darkMode", true);
   private static JFrame frame;
   private static JButton themeButton;
@@ -60,7 +68,170 @@ public class Main {
   private static JButton previousPageButton;
   private static JButton nextPageButton;
   private static JLabel pageLabel;
-  private static final int PAGE_SIZE = 1000;
+  private static JComboBox<String> pageSizeBox;
+  private static javax.swing.Timer resultFilterDebounce;
+  private static boolean updatingPageSizeBox;
+  private static final int PAGE_CACHE_LIMIT = 8;
+  private static final int PAGE_CACHE_MAX_ROWS = 16000;
+  private static final java.util.concurrent.ExecutorService COUNT_POOL =
+      java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "santysql-count"); t.setDaemon(true); return t;
+      });
+  private record DirectSql(String source, String sql) {}
+  // Extrai apenas limites finais simples, preservando a consulta original no editor.
+  // O limite SQL e o tamanho de pagina sao coisas distintas.
+  private record SqlWindow(String baseSql, Long maxRows, long startOffset) {}
+  private static SqlWindow sqlWindow(String sql) {
+    String text = sql.trim();
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+        "(?is)^(.+?)\\s+OFFSET\\s+(\\d+)\\s+ROWS?\\s+FETCH\\s+(?:FIRST|NEXT)\\s+(\\d+)\\s+ROWS?\\s+ONLY$").matcher(text);
+    if (m.matches()) return new SqlWindow(m.group(1).trim(), Long.parseLong(m.group(3)), Long.parseLong(m.group(2)));
+    m = java.util.regex.Pattern.compile(
+        "(?is)^(.+?)\\s+FETCH\\s+(?:FIRST|NEXT)\\s+(\\d+)\\s+ROWS?\\s+ONLY$").matcher(text);
+    if (m.matches()) return new SqlWindow(m.group(1).trim(), Long.parseLong(m.group(2)), 0L);
+    m = java.util.regex.Pattern.compile("(?is)^(.+?)\\s+LIMIT\\s+(\\d+)\\s+OFFSET\\s+(\\d+)$").matcher(text);
+    if (m.matches()) return new SqlWindow(m.group(1).trim(), Long.parseLong(m.group(2)), Long.parseLong(m.group(3)));
+    m = java.util.regex.Pattern.compile("(?is)^(.+?)\\s+LIMIT\\s+(\\d+)\\s*,\\s*(\\d+)$").matcher(text);
+    if (m.matches()) return new SqlWindow(m.group(1).trim(), Long.parseLong(m.group(3)), Long.parseLong(m.group(2)));
+    m = java.util.regex.Pattern.compile("(?is)^(.+?)\\s+LIMIT\\s+(\\d+)$").matcher(text);
+    if (m.matches()) return new SqlWindow(m.group(1).trim(), Long.parseLong(m.group(2)), 0L);
+    return new SqlWindow(text, null, 0L);
+  }
+  private static int resultPageSize(JScrollPane scroll) {
+    Object size = scroll.getClientProperty("pageSize");
+    return size instanceof Integer n ? n : preferredPageSize;
+  }
+  private static String formatPageSize(int size) {
+    return size == 0 ? "Todas (1 página)" : String.format(new Locale("pt", "BR"), "%,d", size);
+  }
+  private static String firstPageSql(String sql, int size) {
+    DirectSql direct = directSql(sql);
+    if (direct == null) return sql;
+    return directPageSql(direct, sqlWindow(sql), 0, size);
+  }
+  // MySQL Connector/J: modo streaming apenas em leituras diretas ilimitadas.
+  // Reduz a duplicação do resultado na memória do driver antes de montar a grade.
+  private static void configureFetch(Statement stmt, String sql, int size) throws SQLException {
+    if (size == 0 && directSql(sql) != null && isPageableSql(sql)) {
+      stmt.setFetchSize(Integer.MIN_VALUE);
+    }
+  }
+  private static String directPageSql(DirectSql direct, SqlWindow window, int page, int size) {
+    long skipped = (long) page * size;
+    long amount = size == 0 ? (window.maxRows() == null ? 0L : window.maxRows())
+        : window.maxRows() == null ? size : Math.max(0L, Math.min((long) size, window.maxRows() - skipped));
+    long offset = Math.addExact(window.startOffset(), skipped);
+    if (size == 0 && window.maxRows() == null && offset == 0L) return direct.sql();
+    // LIMIT de um inteiro positivo mantém o teto do SQL; para OFFSET puro,
+    // o MySQL exige um limite sintático (máximo de BIGINT UNSIGNED).
+    String limit = size == 0 && window.maxRows() == null ? "18446744073709551615" : Long.toString(amount);
+    return direct.sql() + " LIMIT " + limit + " OFFSET " + offset;
+  }
+  // Apenas SELECTs simples de um unico servidor sao enviados diretamente ao MySQL.
+  // Consultas federadas, CTEs e construcoes nao reconhecidas continuam no Calcite.
+  private static DirectSql directSql(String sql) {
+    String trimmed = sqlWindow(sql).baseSql();
+    if (!trimmed.matches("(?is)^SELECT\\s+.*")) return null;
+    if (trimmed.matches("(?is).*\\b(?:WITH|UNION|INTERSECT|EXCEPT|FETCH|OFFSET|JOIN|EXISTS)\\b.*")) return null;
+    if (trimmed.indexOf(';') >= 0 || trimmed.split("(?i)\\bSELECT\\b", -1).length != 2) return null;
+    java.util.regex.Matcher refs = java.util.regex.Pattern.compile(
+        "(?i)\\b(?:FROM|JOIN)\\s+([A-Za-z_][A-Za-z0-9_]*)\\.([`\"A-Za-z0-9_]+)").matcher(trimmed);
+    String source = null;
+    int count = 0;
+    while (refs.find()) {
+      String resolved = resolveSource(refs.group(1));
+      if (resolved == null || (source != null && !source.equals(resolved))) return null;
+      source = resolved; count++;
+    }
+    if (source == null || count != 1) return null;
+    String cleaned = trimmed.replaceAll("(?i)\\b" + java.util.regex.Pattern.quote(source) + "\\.", "");
+    // Restrito a uma tabela: sem subconsultas, joins ou referencias cruzadas.
+    if (cleaned.matches("(?is).*\\b(?:JOIN|FROM)\\s*\\(.*")) return null;
+    return new DirectSql(source, cleaned);
+  }
+  private static Connection queryConnectionFor(String sql) throws SQLException {
+    DirectSql direct = directSql(sql);
+    return direct == null ? openQueryConnection() : SOURCES.get(direct.source()).getConnection();
+  }
+  private static String executableSql(String sql) {
+    DirectSql direct = directSql(sql);
+    if (direct == null) return sql;
+    SqlWindow window = sqlWindow(sql);
+    if (window.maxRows() != null) {
+      return direct.sql() + " LIMIT " + window.maxRows() + " OFFSET " + window.startOffset();
+    }
+    return direct.sql();
+  }
+  private static java.util.Map<Integer, DefaultTableModel> pageCache(JScrollPane scroll) {
+    @SuppressWarnings("unchecked")
+    java.util.Map<Integer, DefaultTableModel> cache =
+        (java.util.Map<Integer, DefaultTableModel>) scroll.getClientProperty("pageCache");
+    if (cache == null) {
+      cache = new LinkedHashMap<Integer, DefaultTableModel>(12, .75f, true) {
+        protected boolean removeEldestEntry(Map.Entry<Integer, DefaultTableModel> eldest) {
+          int byMemory = Math.max(1, PAGE_CACHE_MAX_ROWS / Math.max(1, resultPageSize(scroll)));
+          return size() > Math.min(PAGE_CACHE_LIMIT, byMemory);
+        }
+      };
+      scroll.putClientProperty("pageCache", cache);
+    }
+    return cache;
+  }
+  private static void requestCount(JScrollPane scroll, String sql) {
+    // Evita aplicar contagens antigas após reexecutar ou alterar a página.
+    final Object countTicket = new Object();
+    scroll.putClientProperty("countTicket", countTicket);
+    DirectSql direct = directSql(sql);
+    if (resultPageSize(scroll) == 0) {
+      // O conjunto completo já está disponível; COUNT duplicaria o trabalho.
+      scroll.putClientProperty("countPending", false);
+      updatePageControls();
+      return;
+    }
+    scroll.putClientProperty("totalRows", null);
+    scroll.putClientProperty("countPending", direct != null && isPageableSql(sql));
+    updatePageControls();
+    if (direct == null || !isPageableSql(sql)) return;
+    COUNT_POOL.submit(() -> {
+      try (Connection conn = SOURCES.get(direct.source()).getConnection();
+           Statement stmt = conn.createStatement()) {
+        stmt.setQueryTimeout(120);
+        String countSql = "SELECT COUNT(*) FROM (" + direct.sql() + ") AS SANTYSQL_TOTAL";
+        // Otimiza SELECT * FROM tabela [ORDER BY coluna] sem filtros ou joins:
+        // a contagem não precisa ler colunas ou executar a ordenação.
+        java.util.regex.Matcher basic = java.util.regex.Pattern.compile(
+            "(?is)^SELECT\\s+\\*\\s+FROM\\s+([`\"A-Za-z_][`\"A-Za-z0-9_]*)"
+                + "(?:\\s+ORDER\\s+BY\\s+[`\"A-Za-z0-9_.,\\s]+)?\\s*$")
+            .matcher(direct.sql());
+        if (basic.matches()) countSql = "SELECT COUNT(*) FROM " + basic.group(1);
+        try (ResultSet rs = stmt.executeQuery(countSql)) {
+          if (rs.next()) {
+            SqlWindow window = sqlWindow(sql);
+            long total = Math.max(0L, rs.getLong(1) - window.startOffset());
+            if (window.maxRows() != null) total = Math.min(total, window.maxRows());
+            final long finalTotal = total;
+            SwingUtilities.invokeLater(() -> {
+              if (resultTabs.indexOfComponent(scroll) >= 0 && countTicket == scroll.getClientProperty("countTicket")
+                  && sql.equals(scroll.getClientProperty("sqlQueryKey"))) {
+                scroll.putClientProperty("totalRows", finalTotal);
+                scroll.putClientProperty("countPending", false);
+                updatePageControls();
+              }
+            });
+          }
+        }
+      } catch (Exception ex) {
+        SwingUtilities.invokeLater(() -> {
+          if (resultTabs.indexOfComponent(scroll) >= 0 && countTicket == scroll.getClientProperty("countTicket")
+                  && sql.equals(scroll.getClientProperty("sqlQueryKey"))) {
+            scroll.putClientProperty("countPending", false);
+            updatePageControls();
+          }
+        });
+      }
+    });
+  }
+
   private static boolean changingResultTab = false;
   private static final java.util.concurrent.atomic.AtomicReference<Statement> RUNNING_STATEMENT = new java.util.concurrent.atomic.AtomicReference<>();
   private static final java.util.concurrent.atomic.AtomicReference<Connection> RUNNING_CONNECTION = new java.util.concurrent.atomic.AtomicReference<>();
@@ -130,7 +301,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 1.5.1");
+    frame = new JFrame("SantySQL Studio - 1.5.5");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -291,10 +462,14 @@ public class Main {
     resultFilter = new JTextField(23);
     resultFilter.putClientProperty("JTextField.placeholderText", "Filtrar linhas do resultado selecionado...");
     resultFilter.setToolTipText("Filtra os dados ja carregados na aba selecionada; nao consulta novamente o servidor.");
+    // A filtragem de 100 mil linhas no EDT a cada tecla trava a interface.
+    // Adiar por 300 ms permite digitar normalmente antes de recalcular a grade.
+    resultFilterDebounce = new javax.swing.Timer(300, e -> applyResultFilter());
+    resultFilterDebounce.setRepeats(false);
     resultFilter.getDocument().addDocumentListener(new DocumentListener() {
-      public void insertUpdate(DocumentEvent e) { applyResultFilter(); }
-      public void removeUpdate(DocumentEvent e) { applyResultFilter(); }
-      public void changedUpdate(DocumentEvent e) { applyResultFilter(); }
+      public void insertUpdate(DocumentEvent e) { resultFilterDebounce.restart(); }
+      public void removeUpdate(DocumentEvent e) { resultFilterDebounce.restart(); }
+      public void changedUpdate(DocumentEvent e) { resultFilterDebounce.restart(); }
     });
     JPanel resultHeader = new JPanel(new BorderLayout(8, 0));
     resultHeader.add(resultSummary, BorderLayout.CENTER);
@@ -313,6 +488,14 @@ public class Main {
     previousPageButton = new JButton("◀ Anterior");
     nextPageButton = new JButton("Próxima ▶");
     pageLabel = new JLabel("Página 1");
+    pageSizeBox = new JComboBox<>(new String[]{"100", "250", "500", "1.000", "2.000", "5.000", "10.000", "20.000", "50.000", "100.000", "Todas (1 página)"});
+    pageSizeBox.setEditable(true);
+    pageSizeBox.setSelectedItem(formatPageSize(preferredPageSize));
+    pageSizeBox.setToolTipText("De 100 a 100.000 linhas, ou todas em uma única página. A opção Todas pode usar muita memória.");
+    pageSizeBox.setPreferredSize(new Dimension(92, pageSizeBox.getPreferredSize().height));
+    pageSizeBox.addActionListener(e -> changeRowsPerPage());
+    paging.add(new JLabel("Linhas/página:"));
+    paging.add(pageSizeBox);
     previousPageButton.addActionListener(e -> changeResultPage(-1));
     nextPageButton.addActionListener(e -> changeResultPage(1));
     paging.add(previousPageButton);
@@ -332,7 +515,7 @@ public class Main {
     JSplitPane horizontal = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, explorerPanel, vertical);
     horizontal.setResizeWeight(.19);
     horizontal.setDividerLocation(275);
-    status = new JLabel(" Carregue as conexões para iniciar. | Limite de visualização: " + ROW_LIMIT + " linhas");
+    status = new JLabel(" Carregue as conexões para iniciar. | " + formatPageSize(preferredPageSize) + " linhas por página");
     status.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
     JPanel top = new JPanel(new BorderLayout());
     JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado");
@@ -1144,7 +1327,7 @@ public class Main {
     return "";
   }
 
-  // Cada execucao gera uma grade independente, preservando resultados anteriores.
+  // Cada resultado usa uma grade independente; novas execuções reutilizam as abas.
   private static JTable newResultTable(DefaultTableModel model) {
     JTable table = new JTable(model);
     table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
@@ -1259,9 +1442,17 @@ public class Main {
     String value = resultFilter.getText().trim();
     int selectedColumn = resultFilterColumn.getSelectedIndex() - 1;
     // JComboBox usa ordem do modelo; conversao garante compatibilidade com colunas arrastadas.
-    sorter.setRowFilter(value.isEmpty() ? null : (selectedColumn < 0
-        ? RowFilter.regexFilter("(?iu)" + java.util.regex.Pattern.quote(value))
-        : RowFilter.regexFilter("(?iu)" + java.util.regex.Pattern.quote(value), selectedColumn)));
+    String search = value.toLowerCase(Locale.ROOT);
+    sorter.setRowFilter(value.isEmpty() ? null : new RowFilter<DefaultTableModel, Integer>() {
+      public boolean include(Entry<? extends DefaultTableModel, ? extends Integer> entry) {
+        if (selectedColumn >= 0) return entry.getStringValue(selectedColumn)
+            .toLowerCase(Locale.ROOT).contains(search);
+        for (int c = 0; c < entry.getValueCount(); c++) {
+          if (entry.getStringValue(c).toLowerCase(Locale.ROOT).contains(search)) return true;
+        }
+        return false;
+      }
+    });
     Component tab = resultTabs.getSelectedComponent();
     if (tab instanceof JComponent component) {
       component.putClientProperty("resultFilter", value);
@@ -1355,10 +1546,15 @@ public class Main {
     status.setText(" Aba de resultados fechada.");
   }
 
+  // Usa o padrao brasileiro para quantidades na interface: 2.000, 50.000, 100.000.
+  private static String formatRowCount(long value) {
+    return String.format(DISPLAY_LOCALE, "%,d", value);
+  }
+
   private static void addResultTab(DefaultTableModel model, double elapsed) {
     JTable table = newResultTable(model);
     JScrollPane scroll = new JScrollPane(table);
-    String summary = String.format(Locale.ROOT, "  RESULTADOS  ·  %,d linhas  ·  %.2f s", model.getRowCount(), elapsed);
+    String summary = String.format(Locale.ROOT, "  RESULTADOS  ·  %s linhas  ·  %.2f s", formatRowCount(model.getRowCount()), elapsed);
     scroll.putClientProperty("resultSummary", summary);
     String title = "Resultado " + nextResultNumber++ + " (" + model.getRowCount() + ")";
     resultTabs.addTab(title, scroll);
@@ -1372,7 +1568,7 @@ public class Main {
   }
 
   // A aba de resultado representa a posicao do SELECT na execucao, nao o texto SQL.
-  private static void showOrUpdateResultTab(DefaultTableModel model, double elapsed, Component sqlTab, String sql, int slot) {
+  private static void showOrUpdateResultTab(DefaultTableModel model, double elapsed, Component sqlTab, String sql, int slot, int pageSize) {
     JScrollPane scroll;
     if (slot < resultTabs.getTabCount() && resultTabs.getComponentAt(slot) instanceof JScrollPane existing) {
       scroll = existing;
@@ -1384,13 +1580,20 @@ public class Main {
     JTable table = newResultTable(model);
     scroll.setViewportView(table);
     scroll.putClientProperty("resultSummary", String.format(Locale.ROOT,
-        "  RESULTADOS  ·  %,d linhas  ·  %.2f s", model.getRowCount(), elapsed));
+        "  RESULTADOS  ·  %s linhas  ·  %.2f s", formatRowCount(model.getRowCount()), elapsed));
     scroll.putClientProperty("resultFilter", "");
     scroll.putClientProperty("resultFilterColumn", 0);
     scroll.putClientProperty("sqlSourceTab", sqlTab);
     scroll.putClientProperty("sqlQueryKey", sql.trim());
     scroll.putClientProperty("resultPage", 0);
-    scroll.putClientProperty("resultHasMore", model.getRowCount() == PAGE_SIZE && isPageableSql(sql));
+    scroll.putClientProperty("pageSize", pageSize);
+    SqlWindow window = sqlWindow(sql);
+    scroll.putClientProperty("resultHasMore", pageSize > 0 && model.getRowCount() == pageSize && isPageableSql(sql)
+        && (window.maxRows() == null || window.maxRows() > pageSize));
+    if (pageSize == 0) scroll.putClientProperty("totalRows", (long) model.getRowCount());
+    scroll.putClientProperty("pageCache", null);
+    pageCache(scroll).put(0, model);
+    requestCount(scroll, sql);
     String title = "Resultado " + (slot + 1) + " (" + model.getRowCount() + ")";
     int idx = resultTabs.indexOfComponent(scroll);
     resultTabs.setTitleAt(idx, title);
@@ -1402,8 +1605,9 @@ public class Main {
 
   private static boolean isPageableSql(String sql) {
     String normalized = sql.stripLeading().toUpperCase(Locale.ROOT);
-    return (normalized.startsWith("SELECT ") || normalized.startsWith("WITH "))
-        && !normalized.matches("(?s).*\\b(?:FETCH\\s+(?:FIRST|NEXT)|LIMIT|OFFSET)\\b.*");
+    if (!(normalized.startsWith("SELECT ") || normalized.startsWith("WITH "))) return false;
+    SqlWindow window = sqlWindow(sql);
+    return window.maxRows() != null || !normalized.matches("(?s).*\\b(?:FETCH\\s+(?:FIRST|NEXT)|LIMIT|OFFSET)\\b.*");
   }
 
   private static void trimResultTabs(int count) {
@@ -1411,11 +1615,69 @@ public class Main {
     selectResultTab();
   }
 
-  // Paginacao sob demanda: cada pagina executa SQL no servidor, sem armazenar as demais.
+  // Troca o tamanho da página preservando a preferência, com proteção para "Todas".
+  private static void changeRowsPerPage() {
+    if (updatingPageSizeBox || pageSizeBox == null) return;
+    String label = String.valueOf(pageSizeBox.getSelectedItem()).trim();
+    int chosen;
+    if (label.toLowerCase(Locale.ROOT).startsWith("todas")) chosen = 0;
+    else {
+      String text = label.replace(".", "");
+      if (!text.matches("[0-9]+")) { updatePageControls(); return; }
+      try { chosen = Integer.parseInt(text); }
+      catch (NumberFormatException ex) { updatePageControls(); return; }
+    }
+    if (chosen != 0 && (chosen < 100 || chosen > MAX_PAGE_SIZE)) {
+      status.setText(" Escolha de 100 a 100.000 linhas, ou Todas (1 página).");
+      updatePageControls();
+      return;
+    }
+    Component selected = resultTabs.getSelectedComponent();
+    JScrollPane scroll = selected instanceof JScrollPane p ? p : null;
+    if (currentQuery != null && !currentQuery.isDone()) {
+      status.setText(" Aguarde o fim da consulta antes de mudar o tamanho da página.");
+      updatePageControls();
+      return;
+    }
+    if (chosen == 0 && chosen != preferredPageSize) {
+      Object totalObj = scroll == null ? null : scroll.getClientProperty("totalRows");
+      String totalText = totalObj instanceof Long t
+          ? String.format(new Locale("pt", "BR"), "%,d", t) : "todos os registros da consulta";
+      String warning = "A opção Todas (1 página) carregará " + totalText + " na memória.\n"
+          + "Em tabelas grandes, o uso de RAM pode ser alto e o carregamento pode demorar.\n"
+          + "É possível cancelar a consulta durante o carregamento. Deseja continuar?";
+      if (JOptionPane.showConfirmDialog(frame, warning, "Carregar todos os registros",
+          JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE) != JOptionPane.YES_OPTION) {
+        updatePageControls();
+        return;
+      }
+    }
+    preferredPageSize = chosen;
+    PREFS.putInt("rowsPerPage", chosen);
+    if (scroll != null && resultTabs.indexOfComponent(scroll) >= 0 && resultPageSize(scroll) != chosen) {
+      scroll.putClientProperty("pageSize", chosen);
+      scroll.putClientProperty("countTicket", new Object());
+      scroll.putClientProperty("pageCache", null);
+      scroll.putClientProperty("resultHasMore", false);
+      // A contagem conhecida continua válida para o mesmo SQL, salvo quando
+      // um novo resultado a substitui durante a recarga.
+      loadResultPage(scroll, 0);
+    } else status.setText(" Linhas por página: " + formatPageSize(chosen) + ".");
+    updatePageControls();
+  }
+
+  // A pagina reflete o limite do SQL e o numero de linhas escolhido.
   private static void updatePageControls() {
     if (previousPageButton == null || nextPageButton == null || pageLabel == null) return;
     Component selected = resultTabs == null ? null : resultTabs.getSelectedComponent();
-    if (!(selected instanceof JScrollPane scroll)) {
+    JScrollPane scroll = selected instanceof JScrollPane p ? p : null;
+    int size = scroll == null ? preferredPageSize : resultPageSize(scroll);
+    if (pageSizeBox != null) {
+      updatingPageSizeBox = true;
+      try { pageSizeBox.setSelectedItem(formatPageSize(size)); }
+      finally { updatingPageSizeBox = false; }
+    }
+    if (scroll == null) {
       previousPageButton.setEnabled(false);
       nextPageButton.setEnabled(false);
       pageLabel.setText("Nenhum resultado");
@@ -1423,11 +1685,38 @@ public class Main {
     }
     Object value = scroll.getClientProperty("resultPage");
     int page = value instanceof Integer ? (Integer) value : 0;
-    boolean pagingSupported = scroll.getClientProperty("sqlQueryKey") instanceof String sql && isPageableSql(sql);
+    Object sqlValue = scroll.getClientProperty("sqlQueryKey");
+    boolean pagingSupported = size > 0 && sqlValue instanceof String sql && isPageableSql(sql);
     boolean busy = currentQuery != null && !currentQuery.isDone();
     previousPageButton.setEnabled(pagingSupported && page > 0 && !busy);
     nextPageButton.setEnabled(pagingSupported && Boolean.TRUE.equals(scroll.getClientProperty("resultHasMore")) && !busy);
-    pageLabel.setText("Página " + (page + 1) + " · " + PAGE_SIZE + " linhas/página");
+    Object totalObj = scroll.getClientProperty("totalRows");
+    if (size == 0) {
+      int loaded = ((JTable) scroll.getViewport().getView()).getModel().getRowCount();
+      pageLabel.setText(String.format(new Locale("pt", "BR"),
+          "Página 1 de 1  ·  %,d registros", loaded));
+      previousPageButton.setEnabled(false);
+      nextPageButton.setEnabled(false);
+      return;
+    }
+    if (totalObj instanceof Long total) {
+      long pages = Math.max(1, total == 0 ? 1 : 1 + (total - 1) / size);
+      long first = total == 0 ? 0 : (long) page * size + 1;
+      long last = Math.min(total, (long) (page + 1) * size);
+      pageLabel.setText(String.format(new Locale("pt", "BR"),
+          "Página %d de %,d  ·  %,d–%,d de %,d registros", page + 1, pages, first, last, total));
+      nextPageButton.setEnabled(pagingSupported && page + 1 < pages && !busy);
+    } else if (sqlValue instanceof String sql && sqlWindow(sql).maxRows() != null) {
+      long max = sqlWindow(sql).maxRows();
+      long maxPages = Math.max(1L, max == 0 ? 1L : 1L + (max - 1L) / size);
+      pageLabel.setText("Página " + (page + 1) + " de até " + maxPages +
+          "  ·  limite SQL: " + String.format(new Locale("pt", "BR"), "%,d", max) + " registros" +
+          (Boolean.TRUE.equals(scroll.getClientProperty("countPending")) ? " (contando...)" : ""));
+      if (page + 1 >= maxPages) nextPageButton.setEnabled(false);
+    } else {
+      pageLabel.setText("Página " + (page + 1) + " · " +
+          (Boolean.TRUE.equals(scroll.getClientProperty("countPending")) ? "calculando total..." : "total não disponível"));
+    }
   }
 
   private static void changeResultPage(int direction) {
@@ -1440,9 +1729,35 @@ public class Main {
         ? (Integer) scroll.getClientProperty("resultPage") : 0;
     int target = current + direction;
     if (target < 0 || (direction > 0 && !Boolean.TRUE.equals(scroll.getClientProperty("resultHasMore")))) return;
+    loadResultPage(scroll, target);
+  }
+
+  private static void loadResultPage(JScrollPane scroll, int target) {
+    if (currentQuery != null && !currentQuery.isDone()) return;
+    if (resultTabs.indexOfComponent(scroll) < 0) return;
+    Object original = scroll.getClientProperty("sqlQueryKey");
+    if (!(original instanceof String sql) || sql.isBlank()) return;
+    final int size = resultPageSize(scroll);
+    // Todas carrega o SQL completo, mesmo quando não aceita paginação por OFFSET.
+    if (size > 0 && !isPageableSql(sql)) return;
+    int current = scroll.getClientProperty("resultPage") instanceof Integer
+        ? (Integer) scroll.getClientProperty("resultPage") : 0;
+    SqlWindow window = sqlWindow(sql);
+    if (target < 0 || size == 0 && target != 0
+        || size > 0 && window.maxRows() != null && (long) target * size >= window.maxRows()) return;
+    DefaultTableModel cached = pageCache(scroll).get(target);
+    if (cached != null) {
+      displayPage(scroll, cached, target, 0, true);
+      status.setText(" Página " + (target + 1) + " carregada do cache.");
+      return;
+    }
     // A consulta original e encapsulada para preservar WHERE, ORDER BY e limites declarados.
-    String pagedSql = "SELECT * FROM (" + sql + ") AS SANTYSQL_PAGE "
-        + "OFFSET " + ((long) target * PAGE_SIZE) + " ROWS FETCH NEXT " + PAGE_SIZE + " ROWS ONLY";
+    DirectSql directPage = directSql(sql);
+    String pagedSql = directPage != null
+        ? directPageSql(directPage, window, target, size)
+        : size == 0 ? sql
+        : "SELECT * FROM (" + sql + ") AS SANTYSQL_PAGE "
+            + "OFFSET " + ((long) target * size) + " ROWS FETCH NEXT " + size + " ROWS ONLY";
     execute.setEnabled(false);
     executeScriptButton.setEnabled(false);
     cancelQueryButton.setEnabled(true);
@@ -1455,12 +1770,13 @@ public class Main {
         Connection conn = null;
         Statement stmt = null;
         try {
-          conn = openQueryConnection();
+          conn = directPage != null ? SOURCES.get(directPage.source()).getConnection() : openQueryConnection();
           stmt = conn.createStatement();
           RUNNING_CONNECTION.set(conn);
           RUNNING_STATEMENT.set(stmt);
-          stmt.setMaxRows(PAGE_SIZE);
+          stmt.setMaxRows(size);
           stmt.setQueryTimeout(120);
+          configureFetch(stmt, sql, size);
           try (ResultSet rs = stmt.executeQuery(pagedSql)) {
             ResultSetMetaData meta = rs.getMetaData();
             String[] columns = new String[meta.getColumnCount()];
@@ -1469,7 +1785,7 @@ public class Main {
               public boolean isCellEditable(int row, int col) { return false; }
             };
             while (!isCancelled() && !Thread.currentThread().isInterrupted()
-                && rs.next() && model.getRowCount() < PAGE_SIZE) {
+                && (size == 0 || model.getRowCount() < size) && rs.next()) {
               Object[] row = new Object[columns.length];
               for (int i = 0; i < row.length; i++) row[i] = rs.getObject(i + 1);
               model.addRow(row);
@@ -1497,24 +1813,9 @@ public class Main {
             status.setText(" Não há mais registros após a página " + (current + 1) + ".");
             return;
           }
-          JTable table = newResultTable(model);
-          scroll.setViewportView(table);
-          scroll.putClientProperty("resultPage", target);
-          scroll.putClientProperty("resultHasMore", model.getRowCount() == PAGE_SIZE);
-          scroll.putClientProperty("resultFilter", "");
-          scroll.putClientProperty("resultFilterColumn", 0);
+          pageCache(scroll).put(target, model);
           double seconds = (System.nanoTime() - started) / 1_000_000_000.0;
-          scroll.putClientProperty("resultSummary", String.format(Locale.ROOT,
-              "  RESULTADOS · Página %d · %,d linhas · %.2f s", target + 1, model.getRowCount(), seconds));
-          String oldTitle = resultTabs.getTitleAt(resultTabs.indexOfComponent(scroll));
-          int suffix = oldTitle.lastIndexOf(" (");
-          String prefix = suffix >= 0 && oldTitle.endsWith(")") ? oldTitle.substring(0, suffix) : oldTitle;
-          String title = prefix + " (" + model.getRowCount() + ")";
-          int idx = resultTabs.indexOfComponent(scroll);
-          resultTabs.setTitleAt(idx, title);
-          resultTabs.setTabComponentAt(idx, resultTabHeader(title, scroll));
-          configureColumns(table);
-          if (resultTabs.getSelectedComponent() == scroll) selectResultTab();
+          displayPage(scroll, model, target, seconds, false);
           status.setText(" Página " + (target + 1) + " carregada.");
         } catch (Exception ex) {
           if (CANCEL_REQUESTED.get()) status.setText(" Paginação cancelada.");
@@ -1523,6 +1824,35 @@ public class Main {
       }
     };
     currentQuery.execute();
+    updatePageControls();
+  }
+
+  private static void displayPage(JScrollPane scroll, DefaultTableModel model,
+                                  int page, double seconds, boolean cached) {
+    JTable table = newResultTable(model);
+    scroll.setViewportView(table);
+    scroll.putClientProperty("resultPage", page);
+    Object totalObj = scroll.getClientProperty("totalRows");
+    int size = resultPageSize(scroll);
+    Object sqlValue = scroll.getClientProperty("sqlQueryKey");
+    SqlWindow window = sqlValue instanceof String sql ? sqlWindow(sql) : new SqlWindow("", null, 0);
+    boolean hasMore = size > 0 && (totalObj instanceof Long total
+        ? (long) (page + 1) * size < total : model.getRowCount() == size
+            && (window.maxRows() == null || (long) (page + 1) * size < window.maxRows()));
+    scroll.putClientProperty("resultHasMore", hasMore);
+    if (size == 0) scroll.putClientProperty("totalRows", (long) model.getRowCount());
+    scroll.putClientProperty("resultFilter", "");
+    scroll.putClientProperty("resultFilterColumn", 0);
+    scroll.putClientProperty("resultSummary", String.format(Locale.ROOT,
+        "  RESULTADOS · Página %d · %s linhas · %s", page + 1, formatRowCount(model.getRowCount()),
+        cached ? "cache" : String.format(Locale.ROOT, "%.2f s", seconds)));
+    int idx = resultTabs.indexOfComponent(scroll);
+    if (idx < 0) return;
+    String title = "Resultado " + (idx + 1) + " (" + model.getRowCount() + ")";
+    resultTabs.setTitleAt(idx, title);
+    resultTabs.setTabComponentAt(idx, resultTabHeader(title, scroll));
+    configureColumns(table);
+    if (resultTabs.getSelectedComponent() == scroll) selectResultTab();
     updatePageControls();
   }
 
@@ -1619,6 +1949,7 @@ public class Main {
     if (sql.isBlank()) { status.setText(" Posicione o cursor em uma consulta ou selecione o SQL."); queryEditor.requestFocusInWindow(); return; }
     final String query = sql;
     final Component sqlTab = tabs.getSelectedComponent();
+    final int pageSize = preferredPageSize;
     rememberQuery(query);
     execute.setEnabled(false);
     executeScriptButton.setEnabled(false);
@@ -1626,33 +1957,41 @@ public class Main {
     CANCEL_REQUESTED.set(false);
     final long started = System.nanoTime();
     status.setText(" Executando consulta... Os resultados anteriores serao preservados.");
+    final long[] phases = new long[3]; // conexão, execução SQL, leitura
     currentQuery = new SwingWorker<DefaultTableModel, Void>() {
       protected DefaultTableModel doInBackground() throws Exception {
         Connection queryConnection = null;
         Statement stmt = null;
         try {
-          queryConnection = openQueryConnection();
+          queryConnection = queryConnectionFor(query);
           stmt = queryConnection.createStatement();
+          phases[0] = System.nanoTime() - started;
           if (currentQuery == this) {
             RUNNING_CONNECTION.set(queryConnection);
             RUNNING_STATEMENT.set(stmt);
           }
           if (isCancelled()) throw new java.util.concurrent.CancellationException("Consulta cancelada");
-          stmt.setMaxRows(ROW_LIMIT);
+          stmt.setMaxRows(pageSize);
           stmt.setQueryTimeout(120);
-          try (ResultSet rs = stmt.executeQuery(query)) {
+          configureFetch(stmt, query, pageSize);
+          long sqlStarted = System.nanoTime();
+          try (ResultSet rs = stmt.executeQuery(firstPageSql(query, pageSize))) {
+            phases[1] = System.nanoTime() - sqlStarted;
+            long readStarted = System.nanoTime();
             ResultSetMetaData meta = rs.getMetaData();
             String[] headers = new String[meta.getColumnCount()];
             for (int i = 0; i < headers.length; i++) headers[i] = meta.getColumnLabel(i + 1);
             DefaultTableModel model = new DefaultTableModel(headers, 0) {
               public boolean isCellEditable(int row, int col) { return false; }
             };
-            while (!Thread.currentThread().isInterrupted() && !isCancelled() && rs.next() && model.getRowCount() < ROW_LIMIT) {
+            while (!Thread.currentThread().isInterrupted() && !isCancelled()
+                && (pageSize == 0 || model.getRowCount() < pageSize) && rs.next()) {
               Object[] row = new Object[headers.length];
               for (int i = 0; i < row.length; i++) row[i] = rs.getObject(i + 1);
               model.addRow(row);
             }
             if (isCancelled() || Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("Consulta cancelada");
+            phases[2] = System.nanoTime() - readStarted;
             return model;
           }
         } finally {
@@ -1674,9 +2013,14 @@ public class Main {
         try {
           DefaultTableModel model = get();
           double elapsed = (System.nanoTime() - started) / 1_000_000_000.0;
-          showOrUpdateResultTab(model, elapsed, sqlTab, query, 0);
+          showOrUpdateResultTab(model, elapsed, sqlTab, query, 0, pageSize);
           trimResultTabs(1);
-          status.setText(" Consulta concluída: " + model.getRowCount() + " linhas (limite: " + ROW_LIMIT + ").");
+          String details = String.format(Locale.ROOT,
+              "Conexão %.2f s | SQL %.2f s | Leitura %.2f s",
+              phases[0] / 1e9, phases[1] / 1e9, phases[2] / 1e9);
+          status.setText(" Consulta: " + formatRowCount(model.getRowCount()) + " linhas em "
+              + String.format(Locale.ROOT, "%.2f s", elapsed) + " | " + details);
+          status.setToolTipText(details + " | " + (directSql(query) == null ? "Calcite" : "MySQL direto"));
         } catch (Exception ex) {
           if (CANCEL_REQUESTED.get()) status.setText(" Consulta cancelada. Resultados anteriores preservados.");
           else { status.setText(" Falha na consulta. Resultados anteriores preservados."); showError(ex); }
@@ -1734,6 +2078,7 @@ public class Main {
     CANCEL_REQUESTED.set(false);
     status.setText(" Executando script: " + commands.size() + " comando(s)...");
     final Component sqlTab = tabs.getSelectedComponent();
+    final int pageSize = preferredPageSize;
     currentQuery = new SwingWorker<Void, ScriptResult>() {
       private int resultSlot = 0;
       protected Void doInBackground() throws Exception {
@@ -1744,14 +2089,15 @@ public class Main {
           Connection connection = null;
           Statement stmt = null;
           try {
-            connection = openQueryConnection();
+            connection = queryConnectionFor(sql);
             stmt = connection.createStatement();
             RUNNING_CONNECTION.set(connection);
             RUNNING_STATEMENT.set(stmt);
             if (isCancelled()) break;
-            stmt.setMaxRows(ROW_LIMIT);
+            stmt.setMaxRows(pageSize);
             stmt.setQueryTimeout(120);
-            boolean hasResult = stmt.execute(sql);
+            configureFetch(stmt, sql, pageSize);
+            boolean hasResult = stmt.execute(isPageableSql(sql) ? firstPageSql(sql, pageSize) : executableSql(sql));
             DefaultTableModel model = null;
             int updated = -1;
             if (hasResult) {
@@ -1762,7 +2108,7 @@ public class Main {
                 model = new DefaultTableModel(headers, 0) {
                   public boolean isCellEditable(int row, int col) { return false; }
                 };
-                while (!isCancelled() && !Thread.currentThread().isInterrupted() && rs.next() && model.getRowCount() < ROW_LIMIT) {
+                while (!isCancelled() && !Thread.currentThread().isInterrupted() && (pageSize == 0 || model.getRowCount() < pageSize) && rs.next()) {
                   Object[] row = new Object[headers.length];
                   for (int i = 0; i < row.length; i++) row[i] = rs.getObject(i + 1);
                   model.addRow(row);
@@ -1782,7 +2128,7 @@ public class Main {
       }
       protected void process(List<ScriptResult> chunks) {
         for (ScriptResult result : chunks) {
-          if (result.model() != null) showOrUpdateResultTab(result.model(), result.elapsed(), sqlTab, commands.get(result.index() - 1), resultSlot++);
+          if (result.model() != null) showOrUpdateResultTab(result.model(), result.elapsed(), sqlTab, commands.get(result.index() - 1), resultSlot++, pageSize);
           status.setText(" Script: comando " + result.index() + "/" + commands.size() +
               (result.model() != null ? " - " + result.model().getRowCount() + " linha(s)." :
                   " - " + result.updated() + " registro(s) afetado(s)."));

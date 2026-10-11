@@ -46,6 +46,8 @@ final class StudioSettings {
     PREFS.putInt("completionDelayMs", value.completionDelayMs());
     PREFS.putInt("sqlFontSize", value.sqlFontSize());
     PREFS.putInt("resultFilterDelayMs", value.resultFilterDelayMs());
+    // Ignora e remove a opcao antiga: a contagem federada e sempre ativa.
+    PREFS.remove("countFederated");
   }
 
   static int pageSize() {

@@ -123,8 +123,17 @@ final class SqlConnectionRegistry {
       case SQLSERVER, POSTGRESQL -> profile.database();
       default -> null;
     };
-    schemas.add(profile.name(), JdbcSchema.create(schemas, profile.name(), ds,
-        catalog, profile.schemaForCalcite()));
+    // Consultas federadas sao analisadas pelo Calcite, mas o SQL enviado a
+    // Firebird precisa respeitar o dialeto da origem. FIRST/SKIP funciona
+    // inclusive nas versoes antigas que nao aceitam OFFSET/FETCH.
+    if (profile.type() == SqlDatabaseType.FIREBIRD) {
+      schemas.add(profile.name(), JdbcSchema.create(schemas, profile.name(), ds,
+          FirebirdCompatDialect.FACTORY, catalog, profile.schemaForCalcite()));
+    } else {
+      // Mesmo caminho da versao 2.6: nenhuma alteracao nos outros fornecedores.
+      schemas.add(profile.name(), JdbcSchema.create(schemas, profile.name(), ds,
+          catalog, profile.schemaForCalcite()));
+    }
   }
 
   /** Atualiza as fontes de forma atomica; em erro preserva conexoes anteriores. */

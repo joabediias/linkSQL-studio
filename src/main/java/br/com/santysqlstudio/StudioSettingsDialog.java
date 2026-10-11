@@ -41,7 +41,8 @@ final class StudioSettingsDialog {
         "As preferências são salvas para as próximas sessões. O tamanho padrão da página "
         + "vale para novas execuções; os resultados já carregados mantêm seu tamanho atual.\n"
         + "Ctrl+Espaço continua funcionando mesmo com as sugestões automáticas desligadas.\n"
-        + "A opção Todas (1 página) pode consumir muita memória.");
+        + "A opção Todas (1 página) pode consumir muita memória.\n"
+        + "A contagem federada ocorre em segundo plano, com tempo limite, sem bloquear o SELECT principal.");
     note.setEditable(false);
     note.setLineWrap(true);
     note.setWrapStyleWord(true);
@@ -53,10 +54,10 @@ final class StudioSettingsDialog {
     JPanel panel = new JPanel(new BorderLayout());
     panel.add(fields, BorderLayout.NORTH);
     panel.add(note, BorderLayout.CENTER);
-    panel.setPreferredSize(new Dimension(575, 390));
+    panel.setPreferredSize(new Dimension(650, 440));
     Object[] buttons = {"Salvar", "Restaurar padrões", "Cancelar"};
     while (true) {
-      int action = JOptionPane.showOptionDialog(owner, panel, "Configurações — SantySQL Studio 2.1",
+      int action = JOptionPane.showOptionDialog(owner, panel, "Configurações — SantySQL Studio 2.6.2",
           JOptionPane.DEFAULT_OPTION, JOptionPane.PLAIN_MESSAGE, null, buttons, buttons[0]);
       if (action < 0 || action == 2) return null;
       if (action == 1) {

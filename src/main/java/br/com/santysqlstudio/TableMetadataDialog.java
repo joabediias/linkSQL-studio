@@ -117,6 +117,7 @@ final class TableMetadataDialog {
           grid.setRowHeight(26);
           grid.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
           grid.getTableHeader().setReorderingAllowed(true);
+          StudioGridHeaders.alignLeft(grid);
           int[] widths = {180, 110, 90, 85, 75, 75, 160, 125, 240};
           for (int i = 0; i < grid.getColumnCount(); i++) {
             TableColumn tc = grid.getColumnModel().getColumn(i);

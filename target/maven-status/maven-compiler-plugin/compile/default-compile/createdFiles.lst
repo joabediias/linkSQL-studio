@@ -16,6 +16,7 @@ br\com\santysqlstudio\Main$CompletionPopup$3.class
 br\com\santysqlstudio\StudioSettings$Snapshot.class
 br\com\santysqlstudio\SqlConnectionRegistry.class
 br\com\santysqlstudio\Main$7.class
+br\com\santysqlstudio\SqlEditorShortcutSupport$1.class
 br\com\santysqlstudio\Main$22.class
 br\com\santysqlstudio\Main$16.class
 br\com\santysqlstudio\SqlEditorActions.class
@@ -32,11 +33,11 @@ br\com\santysqlstudio\Main$13.class
 br\com\santysqlstudio\SingleServerSqlRouter.class
 br\com\santysqlstudio\SqlCompletionContext$Reference.class
 br\com\santysqlstudio\Main$28.class
+br\com\santysqlstudio\StudioGridHeaders.class
 br\com\santysqlstudio\SqlHistoryStore.class
 br\com\santysqlstudio\Main$3.class
 br\com\santysqlstudio\Main$25.class
 br\com\santysqlstudio\Main$15.class
-br\com\santysqlstudio\Main$35.class
 br\com\santysqlstudio\SingleServerSqlRouter$Token.class
 br\com\santysqlstudio\SqlQueryPlanner$DirectSql.class
 br\com\santysqlstudio\TableMetadataDialog$ColumnInfo.class
@@ -61,6 +62,7 @@ br\com\santysqlstudio\SqlResultModels$1.class
 br\com\santysqlstudio\Main.class
 br\com\santysqlstudio\Main$32.class
 br\com\santysqlstudio\Main$26.class
+br\com\santysqlstudio\SqlEditorShortcutSupport.class
 br\com\santysqlstudio\CsvExportWriter.class
 br\com\santysqlstudio\Main$6.class
 br\com\santysqlstudio\SingleServerSqlRouter$Route.class

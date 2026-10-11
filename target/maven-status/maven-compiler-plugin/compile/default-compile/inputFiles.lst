@@ -5,9 +5,11 @@ E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SingleServerSqlR
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlCompletionContext.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlConnectionRegistry.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlEditorActions.java
+E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlEditorShortcutSupport.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlHistoryStore.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlQueryPlanner.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlResultModels.java
+E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\StudioGridHeaders.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\StudioLog.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\StudioSettings.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\StudioSettingsDialog.java

@@ -408,7 +408,7 @@ public class Main {
     JMenuItem goLine = new JMenuItem("Ir para linha... (Ctrl+G)");
     goLine.addActionListener(e -> goToSqlLine());
     sqlMenu.add(goLine);
-    JMenuItem comment = new JMenuItem("Comentar/descomentar linhas (Ctrl+/)");
+    JMenuItem comment = new JMenuItem("Comentar/descomentar linhas (Ctrl+/ ou Ctrl+Shift+7)");
     comment.addActionListener(e -> toggleSqlComment());
     sqlMenu.add(comment);
     JMenuItem duplicate = new JMenuItem("Duplicar linha ou seleção (Ctrl+D)");
@@ -609,7 +609,7 @@ public class Main {
     status = new JLabel(" Carregue as conexões para iniciar. | " + formatPageSize(preferredPageSize) + " linhas por página");
     status.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
     JPanel top = new JPanel(new BorderLayout());
-    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado   ·   v2.2");
+    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado   ·   v2.2.5");
     brand.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 15));
     brand.setBorder(BorderFactory.createEmptyBorder(12, 10, 8, 10));
     top.add(brand, BorderLayout.NORTH);
@@ -687,8 +687,7 @@ public class Main {
     area.getActionMap().put("runSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { runQuery(); } });
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_G, InputEvent.CTRL_DOWN_MASK), "goToLine");
     area.getActionMap().put("goToLine", new AbstractAction() { public void actionPerformed(ActionEvent e) { goToSqlLine(); } });
-    area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_SLASH, InputEvent.CTRL_DOWN_MASK), "toggleComment");
-    area.getActionMap().put("toggleComment", new AbstractAction() { public void actionPerformed(ActionEvent e) { toggleSqlComment(); } });
+    SqlEditorShortcutSupport.installCommentShortcut(area, Main::toggleSqlComment);
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_D, InputEvent.CTRL_DOWN_MASK), "duplicateLine");
     area.getActionMap().put("duplicateLine", new AbstractAction() { public void actionPerformed(ActionEvent e) { duplicateSqlLine(); } });
     String title = "SQL " + (nextTabNumber++);
@@ -1549,6 +1548,7 @@ public class Main {
     table.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 13));
     table.getTableHeader().setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
     table.getTableHeader().setReorderingAllowed(true);
+    StudioGridHeaders.alignLeft(table);
     TableRowSorter<DefaultTableModel> sorter = new TableRowSorter<>(model);
     // Mantem ordenacao numerica para colunas com valores Number.
     for (int c = 0; c < model.getColumnCount(); c++) {

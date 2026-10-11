@@ -1,0 +1,7 @@
+﻿SantySQL Studio 2.2
+- O arquivo de conexoes da versao instalada fica em:
+  %USERPROFILE%\.santysql-studio\config\connections.json
+- Configure suas conexoes pelo menu Conexoes > Gerenciar conexoes.
+- A senha e solicitada ao clicar em Carregar conexoes, se nao houver
+  variavel de ambiente configurada. Nao e gravada em arquivo.
+- Historico, sessoes, preferencias e logs continuam no perfil do usuario.

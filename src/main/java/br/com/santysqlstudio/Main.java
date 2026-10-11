@@ -38,10 +38,52 @@ import br.com.santysqlstudio.SqlQueryPlanner.SqlWindow;
 
 public class Main {
   private static final ObjectMapper JSON = new ObjectMapper();
-  private static final SqlConnectionRegistry CONNECTIONS = new SqlConnectionRegistry();
+  private static final SqlConnectionRegistry CONNECTIONS = new SqlConnectionRegistry(Main::promptConnectionPassword);
   private static final Map<String, BasicDataSource> SOURCES = CONNECTIONS.sources();
   private static Connection federation;
-  private static Path configPath = Paths.get("config", "connections.example.json");
+  private static Path configPath = defaultConfigPath();
+  // Instalacao jpackage: configs pertencem ao usuario, nunca a Program Files.
+  // O projeto Maven continua usando a configuracao relativa anterior.
+  private static Path defaultConfigPath() {
+    if (!Boolean.getBoolean("santysql.packaged"))
+      return Paths.get("config", "connections.example.json");
+    Path userConfig = Paths.get(System.getProperty("user.home"), ".santysql-studio",
+        "config", "connections.json");
+    try {
+      Files.createDirectories(userConfig.getParent());
+      if (!Files.exists(userConfig))
+        Files.writeString(userConfig, "{\n  \"connections\": []\n}\n", StandardCharsets.UTF_8,
+            StandardOpenOption.CREATE_NEW);
+    } catch (IOException ex) {
+      // A tela Gerenciar conexoes mostrara um eventual erro de permissao.
+      System.err.println("Nao foi possivel iniciar configuracao do usuario: " + ex.getMessage());
+    }
+    return userConfig;
+  }
+
+  private static File defaultUserFile(String filename) {
+    if (!Boolean.getBoolean("santysql.packaged")) return new File(filename);
+    Path documents = Paths.get(System.getProperty("user.home"), "Documents");
+    Path folder = Files.isDirectory(documents) ? documents : documents.getParent();
+    return folder.resolve(filename).toFile();
+  }
+
+  // Quando o EXE e aberto pelo menu Iniciar, a senha de um PowerShell anterior
+  // nao esta disponivel. Solicita apenas para a sessao, sem salvar no JSON.
+  private static String promptConnectionPassword(String variableName) {
+    if (GraphicsEnvironment.isHeadless()) return null;
+    JPasswordField field = new JPasswordField(24);
+    JPanel panel = new JPanel(new BorderLayout(0, 8));
+    panel.add(new JLabel("Senha MySQL (" + variableName + "):"), BorderLayout.NORTH);
+    panel.add(field, BorderLayout.CENTER);
+    int choice = JOptionPane.showConfirmDialog(frame, panel, "Senha da conexao",
+        JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE);
+    if (choice != JOptionPane.OK_OPTION) return null;
+    char[] characters = field.getPassword();
+    try { return characters.length == 0 ? null : new String(characters); }
+    finally { java.util.Arrays.fill(characters, '\0'); field.setText(""); }
+  }
+
   private static final int DEFAULT_PAGE_SIZE = StudioSettings.DEFAULT_PAGE_SIZE;
   private static final int MAX_PAGE_SIZE = StudioSettings.MAX_PAGE_SIZE;
   private static final Locale DISPLAY_LOCALE = StudioSettings.DISPLAY_LOCALE;
@@ -291,7 +333,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 2.1");
+    frame = new JFrame("SantySQL Studio - 2.2");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -567,7 +609,7 @@ public class Main {
     status = new JLabel(" Carregue as conexões para iniciar. | " + formatPageSize(preferredPageSize) + " linhas por página");
     status.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
     JPanel top = new JPanel(new BorderLayout());
-    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado   ·   v2.1");
+    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado   ·   v2.2");
     brand.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 15));
     brand.setBorder(BorderFactory.createEmptyBorder(12, 10, 8, 10));
     top.add(brand, BorderLayout.NORTH);
@@ -816,6 +858,8 @@ public class Main {
 
   private static void openSqlFile() {
     JFileChooser chooser = new JFileChooser();
+    if (Boolean.getBoolean("santysql.packaged"))
+      chooser.setCurrentDirectory(defaultUserFile("consulta.sql").getParentFile());
     chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Scripts SQL (*.sql)", "sql"));
     if (chooser.showOpenDialog(frame) != JFileChooser.APPROVE_OPTION) return;
     Path file = chooser.getSelectedFile().toPath();
@@ -835,7 +879,7 @@ public class Main {
     Path file = saveAs ? null : OPEN_FILES.get(tab);
     if (file == null) {
       JFileChooser chooser = new JFileChooser();
-      chooser.setSelectedFile(new File("consulta.sql"));
+      chooser.setSelectedFile(defaultUserFile("consulta.sql"));
       chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Scripts SQL (*.sql)", "sql"));
       if (chooser.showSaveDialog(frame) != JFileChooser.APPROVE_OPTION) return false;
       file = chooser.getSelectedFile().toPath();
@@ -2500,7 +2544,7 @@ public class Main {
     java.nio.charset.Charset charset = encodings.getSelectedIndex() == 1
         ? java.nio.charset.StandardCharsets.ISO_8859_1 : StandardCharsets.UTF_8;
     JFileChooser chooser = new JFileChooser();
-    chooser.setSelectedFile(new File("resultado.csv"));
+    chooser.setSelectedFile(defaultUserFile("resultado.csv"));
     if (chooser.showSaveDialog(frame) != JFileChooser.APPROVE_OPTION) return;
     Path path = chooser.getSelectedFile().toPath();
     if (!path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".csv"))

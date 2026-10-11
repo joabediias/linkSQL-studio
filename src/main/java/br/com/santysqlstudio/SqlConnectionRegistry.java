@@ -22,6 +22,13 @@ final class SqlConnectionRegistry {
   private static final ObjectMapper JSON = new ObjectMapper();
   private final Map<String, BasicDataSource> sources = new LinkedHashMap<>();
   private Connection federation;
+  private final java.util.function.Function<String, String> passwordResolver;
+
+  SqlConnectionRegistry() { this(null); }
+
+  SqlConnectionRegistry(java.util.function.Function<String, String> passwordResolver) {
+    this.passwordResolver = passwordResolver;
+  }
 
   Map<String, BasicDataSource> sources() { return sources; }
 
@@ -51,13 +58,22 @@ final class SqlConnectionRegistry {
     try {
       SchemaPlus schemas = next.unwrap(CalciteConnection.class).getRootSchema();
       Set<String> names = new HashSet<>();
+      Map<String, String> requestedPasswords = new java.util.HashMap<>();
       for (JsonNode item : root.path("connections")) {
         String name = item.path("name").asText();
         if (!name.matches("[A-Za-z][A-Za-z0-9_]*") || !names.add(name.toUpperCase(Locale.ROOT)))
           throw new IllegalArgumentException("Nome inválido ou duplicado: " + name);
         String passwordEnv = item.path("passwordEnv").asText();
         String password = System.getenv(passwordEnv);
-        if (password == null) throw new IllegalArgumentException("Variável de ambiente ausente: " + passwordEnv);
+        if (password == null || password.isEmpty()) {
+          password = requestedPasswords.get(passwordEnv);
+          if (password == null && passwordResolver != null) {
+            password = passwordResolver.apply(passwordEnv);
+            if (password != null && !password.isEmpty()) requestedPasswords.put(passwordEnv, password);
+          }
+        }
+        if (password == null || password.isEmpty())
+          throw new IllegalArgumentException("Senha MySQL não informada para: " + passwordEnv);
         BasicDataSource ds = new BasicDataSource();
         ds.setDriverClassName("com.mysql.cj.jdbc.Driver");
         ds.setUrl("jdbc:mysql://" + item.path("host").asText() + ":" + item.path("port").asInt(4407) + "/" + item.path("database").asText() + "?useSSL=false&connectTimeout=5000&socketTimeout=120000");

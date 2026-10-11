@@ -126,9 +126,22 @@ public class Main {
   }
   private static String formatPageSize(int size) { return StudioSettings.formatPageSize(size); }
   private static String firstPageSql(String sql, int size) {
+    // JDBC portavel: o limite/paginacao das conexoes nao-MySQL e aplicado
+    // sobre o ResultSet. Nunca injetar LIMIT de MySQL no SQL de outro banco.
+    NativeSqlRouter.Route nativeRoute = nativeRoute(sql);
+    if (nativeRoute != null) return nativeRoute.sql();
     DirectSql direct = directSql(sql);
     if (direct == null) return sql;
     return directPageSql(direct, sqlWindow(sql), 0, size);
+  }
+  private static NativeSqlRouter.Route nativeRoute(String sql) {
+    return NativeSqlRouter.route(sqlWindow(sql).baseSql(), CONNECTIONS.allProfiles());
+  }
+  private static String executionLabel(String sql) {
+    NativeSqlRouter.Route route = nativeRoute(sql);
+    if (route != null) return route.type() + " nativo (" + route.source() + ")";
+    return directSql(sql) == null
+        ? FederatedQuerySupport.executionLabel(sql, CONNECTIONS.allProfiles()) : "MySQL direto";
   }
   private static DirectSql directSql(String sql) {
     return SqlQueryPlanner.directSql(sql, CONNECTIONS.mysqlSourceNames());
@@ -144,8 +157,10 @@ public class Main {
     }
   }
   private static Connection queryConnectionFor(String sql) throws SQLException {
+    NativeSqlRouter.Route nativeRoute = nativeRoute(sql);
+    if (nativeRoute != null) return SOURCES.get(nativeRoute.source()).getConnection();
     DirectSql direct = directSql(sql);
-    return direct == null ? openQueryConnection() : SOURCES.get(direct.source()).getConnection();
+    return direct == null ? openQueryConnection(sql) : SOURCES.get(direct.source()).getConnection();
   }
   private static java.util.Map<Integer, DefaultTableModel> pageCache(JScrollPane scroll) {
     @SuppressWarnings("unchecked")
@@ -163,40 +178,64 @@ public class Main {
     return cache;
   }
   private static void requestCount(JScrollPane scroll, String sql) {
-    // Evita aplicar contagens antigas após reexecutar ou alterar a página.
+    // Desconsidera respostas antigas apos reexecutar consultas ou trocar abas.
     final Object countTicket = new Object();
     scroll.putClientProperty("countTicket", countTicket);
-    DirectSql direct = directSql(sql);
     if (resultPageSize(scroll) == 0) {
-      // O conjunto completo já está disponível; COUNT duplicaria o trabalho.
+      // Todas: a contagem exata e o numero de linhas ja carregadas.
       scroll.putClientProperty("countPending", false);
       updatePageControls();
       return;
     }
+    DirectSql direct = directSql(sql);
+    NativeSqlRouter.Route nativeCount = direct == null ? nativeRoute(sql) : null;
+    final boolean countable = isPageableSql(sql) && (direct != null || nativeCount != null);
     scroll.putClientProperty("totalRows", null);
-    scroll.putClientProperty("countPending", direct != null && isPageableSql(sql));
+    scroll.putClientProperty("countPending", countable);
+    scroll.putClientProperty("countUnavailable", false);
     updatePageControls();
-    if (direct == null || !isPageableSql(sql)) return;
+    if (!countable) {
+      // Consultas federadas: uma pagina incompleta prova que a consulta
+      // terminou. Nao fazemos COUNT remoto implicito para evitar JOIN caro.
+      if (scroll.getViewport().getView() instanceof JTable table) {
+        Long knownTotal = SqlPageTotals.whenExhausted(0, resultPageSize(scroll),
+            table.getModel().getRowCount());
+        if (knownTotal != null) scroll.putClientProperty("totalRows", knownTotal);
+      }
+      updatePageControls();
+      return;
+    }
+
     COUNT_POOL.submit(() -> {
-      try (Connection conn = SOURCES.get(direct.source()).getConnection();
-           Statement stmt = conn.createStatement()) {
-        stmt.setQueryTimeout(120);
-        String countSql = "SELECT COUNT(*) FROM (" + direct.sql() + ") AS SANTYSQL_TOTAL";
-        // Otimiza SELECT * FROM tabela [ORDER BY coluna] sem filtros ou joins:
-        // a contagem não precisa ler colunas ou executar a ordenação.
-        java.util.regex.Matcher basic = java.util.regex.Pattern.compile(
-            "(?is)^SELECT\\s+\\*\\s+FROM\\s+([`\"A-Za-z_][`\"A-Za-z0-9_]*)"
-                + "(?:\\s+ORDER\\s+BY\\s+[`\"A-Za-z0-9_.,\\s]+)?\\s*$")
-            .matcher(direct.sql());
-        if (basic.matches()) countSql = "SELECT COUNT(*) FROM " + basic.group(1);
-        try (ResultSet rs = stmt.executeQuery(countSql)) {
-          if (rs.next()) {
+      try {
+        String source = direct != null ? direct.source() : nativeCount.source();
+        String baseSql = direct != null ? direct.sql() : nativeCount.sql();
+        String countSql;
+        if (direct != null) {
+          countSql = "SELECT COUNT(*) FROM (" + baseSql + ") AS SANTYSQL_TOTAL";
+          // Contagem otimizada para SELECT * FROM tabela sem filtros nem joins.
+          java.util.regex.Matcher basic = java.util.regex.Pattern.compile(
+              "(?is)^SELECT\\s+\\*\\s+FROM\\s+([`\"A-Za-z_][`\"A-Za-z0-9_]*)"
+                  + "(?:\\s+ORDER\\s+BY\\s+[`\"A-Za-z0-9_.,\\s]+)?\\s*$")
+              .matcher(baseSql);
+          if (basic.matches()) countSql = "SELECT COUNT(*) FROM " + basic.group(1);
+        } else {
+          countSql = NativeQueryCount.sql(baseSql);
+          if (countSql == null) throw new SQLException("Consulta nao admite contagem automatica segura.");
+        }
+        try (Connection conn = SOURCES.get(source).getConnection();
+             Statement stmt = conn.createStatement()) {
+          // Nao bloquear a primeira pagina; contagens caras falham de forma silenciosa.
+          stmt.setQueryTimeout(45);
+          try (ResultSet rs = stmt.executeQuery(countSql)) {
+            if (!rs.next()) throw new SQLException("Contagem nao retornou registros.");
             SqlWindow window = sqlWindow(sql);
             long total = Math.max(0L, rs.getLong(1) - window.startOffset());
             if (window.maxRows() != null) total = Math.min(total, window.maxRows());
             final long finalTotal = total;
             SwingUtilities.invokeLater(() -> {
-              if (resultTabs.indexOfComponent(scroll) >= 0 && countTicket == scroll.getClientProperty("countTicket")
+              if (resultTabs.indexOfComponent(scroll) >= 0
+                  && countTicket == scroll.getClientProperty("countTicket")
                   && sql.equals(scroll.getClientProperty("sqlQueryKey"))) {
                 scroll.putClientProperty("totalRows", finalTotal);
                 scroll.putClientProperty("countPending", false);
@@ -206,10 +245,13 @@ public class Main {
           }
         }
       } catch (Exception ex) {
+        StudioLog.error("Falha na contagem auxiliar de resultados", ex);
         SwingUtilities.invokeLater(() -> {
-          if (resultTabs.indexOfComponent(scroll) >= 0 && countTicket == scroll.getClientProperty("countTicket")
-                  && sql.equals(scroll.getClientProperty("sqlQueryKey"))) {
+          if (resultTabs.indexOfComponent(scroll) >= 0
+              && countTicket == scroll.getClientProperty("countTicket")
+              && sql.equals(scroll.getClientProperty("sqlQueryKey"))) {
             scroll.putClientProperty("countPending", false);
+            scroll.putClientProperty("countUnavailable", true);
             updatePageControls();
           }
         });
@@ -333,7 +375,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("SantySQL Studio - 2.2");
+    frame = new JFrame("SantySQL Studio - 2.5.1");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -609,7 +651,7 @@ public class Main {
     status = new JLabel(" Carregue as conexões para iniciar. | " + formatPageSize(preferredPageSize) + " linhas por página");
     status.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
     JPanel top = new JPanel(new BorderLayout());
-    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado   ·   v2.3");
+    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado   ·   v2.5.1");
     brand.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 15));
     brand.setBorder(BorderFactory.createEmptyBorder(12, 10, 8, 10));
     top.add(brand, BorderLayout.NORTH);
@@ -1682,8 +1724,8 @@ public class Main {
     status.setText(" Filtro local: " + results.getRowCount() + " de " + results.getModel().getRowCount() + " linhas exibidas.");
   }
 
-  private static Connection openQueryConnection() throws SQLException {
-    return CONNECTIONS.openFederatedQueryConnection();
+  private static Connection openQueryConnection(String sql) throws SQLException {
+    return CONNECTIONS.openFederatedQueryConnection(sql);
   }
 
   private static void cancelRunningQuery() {
@@ -1857,7 +1899,7 @@ public class Main {
     StudioSettings.setPageSize(chosen);
     if (scroll != null && resultTabs.indexOfComponent(scroll) >= 0 && resultPageSize(scroll) != chosen) {
       scroll.putClientProperty("pageSize", chosen);
-      scroll.putClientProperty("countTicket", new Object());
+      // O SQL nao mudou: preserva a contagem em andamento ao alterar o tamanho de pagina.
       scroll.putClientProperty("pageCache", null);
       scroll.putClientProperty("resultHasMore", false);
       // A contagem conhecida continua válida para o mesmo SQL, salvo quando
@@ -1916,7 +1958,7 @@ public class Main {
       if (page + 1 >= maxPages) nextPageButton.setEnabled(false);
     } else {
       pageLabel.setText("Página " + (page + 1) + " · " +
-          (Boolean.TRUE.equals(scroll.getClientProperty("countPending")) ? "calculando total..." : "total não disponível"));
+          (Boolean.TRUE.equals(scroll.getClientProperty("countPending")) ? "calculando total..." : (Boolean.TRUE.equals(scroll.getClientProperty("countUnavailable")) ? "contagem indisponível" : "total não disponível")));
     }
   }
 
@@ -1944,18 +1986,24 @@ public class Main {
     int current = scroll.getClientProperty("resultPage") instanceof Integer
         ? (Integer) scroll.getClientProperty("resultPage") : 0;
     SqlWindow window = sqlWindow(sql);
+    try { FederatedQuerySupport.validate(sql, CONNECTIONS.allProfiles()); }
+    catch (SQLException ex) { showError(ex); return; }
     if (target < 0 || size == 0 && target != 0
         || size > 0 && window.maxRows() != null && (long) target * size >= window.maxRows()) return;
     DefaultTableModel cached = pageCache(scroll).get(target);
     if (cached != null) {
       displayPage(scroll, cached, target, 0, true);
-      status.setText(" Página " + (target + 1) + " carregada do cache.");
+      status.setText(" Página " + (target + 1) + " carregada.");
       return;
     }
     // A consulta original e encapsulada para preservar WHERE, ORDER BY e limites declarados.
     DirectSql directPage = directSql(sql);
-    String pagedSql = directPage != null
-        ? directPageSql(directPage, window, target, size)
+    NativeSqlRouter.Route nativePage = nativeRoute(sql);
+    NativeJdbcPaging.Window nativeWindow;
+    try { nativeWindow = nativePage == null ? null : NativeJdbcPaging.window(sql, target, size); }
+    catch (SQLException ex) { showError(ex); return; }
+    String pagedSql = nativePage != null ? nativePage.sql()
+        : directPage != null ? directPageSql(directPage, window, target, size)
         : size == 0 ? sql
         : "SELECT * FROM (" + sql + ") AS SANTYSQL_PAGE "
             + "OFFSET " + ((long) target * size) + " ROWS FETCH NEXT " + size + " ROWS ONLY";
@@ -1971,16 +2019,22 @@ public class Main {
         Connection conn = null;
         Statement stmt = null;
         try {
-          conn = directPage != null ? SOURCES.get(directPage.source()).getConnection() : openQueryConnection();
+          conn = nativePage != null ? SOURCES.get(nativePage.source()).getConnection()
+              : directPage != null ? SOURCES.get(directPage.source()).getConnection() : openQueryConnection(sql);
           stmt = conn.createStatement();
           RUNNING_CONNECTION.set(conn);
           RUNNING_STATEMENT.set(stmt);
-          stmt.setMaxRows(size);
+          if (nativeWindow != null) NativeJdbcPaging.configure(stmt, nativeWindow);
+          else stmt.setMaxRows(size);
           stmt.setQueryTimeout(120);
-          configureFetch(stmt, sql, size);
+          if (nativeWindow == null) configureFetch(stmt, sql, size);
           try (ResultSet rs = stmt.executeQuery(pagedSql)) {
-            return SqlResultModels.readResultModel(rs, size, this::isCancelled);
+            return nativeWindow == null ? SqlResultModels.readResultModel(rs, size, this::isCancelled)
+                : NativeJdbcPaging.read(rs, nativeWindow, this::isCancelled);
           }
+        } catch (SQLException ex) {
+          throw nativePage == null && directPage == null
+              ? FederatedQuerySupport.explain(ex) : ex;
         } finally {
           RUNNING_STATEMENT.compareAndSet(stmt, null);
           RUNNING_CONNECTION.compareAndSet(conn, null);
@@ -2029,11 +2083,19 @@ public class Main {
             && (window.maxRows() == null || (long) (page + 1) * size < window.maxRows()));
     scroll.putClientProperty("resultHasMore", hasMore);
     if (size == 0) scroll.putClientProperty("totalRows", (long) model.getRowCount());
+    else if (totalObj == null) {
+      // Quando a pagina nao ficou cheia, nao existem registros posteriores:
+      // o total pode ser inferido sem uma consulta COUNT(*) adicional.
+      Long inferred = SqlPageTotals.whenExhausted(page, size, model.getRowCount());
+      if (inferred != null) scroll.putClientProperty("totalRows", inferred);
+    }
     scroll.putClientProperty("resultFilter", "");
     scroll.putClientProperty("resultFilterColumn", 0);
-    scroll.putClientProperty("resultSummary", String.format(Locale.ROOT,
-        "  RESULTADOS · Página %d · %s linhas · %s", page + 1, formatRowCount(model.getRowCount()),
-        cached ? "cache" : String.format(Locale.ROOT, "%.2f s", seconds)));
+    scroll.putClientProperty("resultSummary", cached
+        ? String.format(Locale.ROOT, "  RESULTADOS · Página %d · %s linhas", page + 1,
+            formatRowCount(model.getRowCount()))
+        : String.format(Locale.ROOT, "  RESULTADOS · Página %d · %s linhas · %.2f s", page + 1,
+            formatRowCount(model.getRowCount()), seconds));
     int idx = resultTabs.indexOfComponent(scroll);
     if (idx < 0) return;
     String title = "Resultado " + (idx + 1) + " (" + model.getRowCount() + ")";
@@ -2136,6 +2198,12 @@ public class Main {
     while (sql.endsWith(";")) sql = sql.substring(0, sql.length() - 1).trim();
     if (sql.isBlank()) { status.setText(" Posicione o cursor em uma consulta ou selecione o SQL."); queryEditor.requestFocusInWindow(); return; }
     final String query = sql;
+    try { FederatedQuerySupport.validate(query, CONNECTIONS.allProfiles()); }
+    catch (SQLException ex) { showError(ex); return; }
+    final NativeSqlRouter.Route nativeQuery = nativeRoute(query);
+    final NativeJdbcPaging.Window nativeWindow;
+    try { nativeWindow = nativeQuery == null ? null : NativeJdbcPaging.window(query, 0, preferredPageSize); }
+    catch (SQLException ex) { showError(ex); return; }
     final Component sqlTab = tabs.getSelectedComponent();
     final int pageSize = preferredPageSize;
     rememberQuery(query);
@@ -2159,17 +2227,23 @@ public class Main {
             RUNNING_STATEMENT.set(stmt);
           }
           if (isCancelled()) throw new java.util.concurrent.CancellationException("Consulta cancelada");
-          stmt.setMaxRows(pageSize);
+          if (nativeWindow != null) NativeJdbcPaging.configure(stmt, nativeWindow);
+          else stmt.setMaxRows(pageSize);
           stmt.setQueryTimeout(120);
-          configureFetch(stmt, query, pageSize);
+          if (nativeWindow == null) configureFetch(stmt, query, pageSize);
           long sqlStarted = System.nanoTime();
           try (ResultSet rs = stmt.executeQuery(firstPageSql(query, pageSize))) {
             phases[1] = System.nanoTime() - sqlStarted;
             long readStarted = System.nanoTime();
-            DefaultTableModel model = SqlResultModels.readResultModel(rs, pageSize, this::isCancelled);
+            DefaultTableModel model = nativeWindow == null
+                ? SqlResultModels.readResultModel(rs, pageSize, this::isCancelled)
+                : NativeJdbcPaging.read(rs, nativeWindow, this::isCancelled);
             phases[2] = System.nanoTime() - readStarted;
             return model;
           }
+        } catch (SQLException ex) {
+          throw nativeQuery == null && directSql(query) == null
+              ? FederatedQuerySupport.explain(ex) : ex;
         } finally {
           RUNNING_STATEMENT.compareAndSet(stmt, null);
           RUNNING_CONNECTION.compareAndSet(queryConnection, null);
@@ -2196,8 +2270,8 @@ public class Main {
               phases[0] / 1e9, phases[1] / 1e9, phases[2] / 1e9);
           status.setText(" Consulta: " + formatRowCount(model.getRowCount()) + " linhas em "
               + String.format(Locale.ROOT, "%.2f s", elapsed) + " | " + details
-              + " | " + (directSql(query) == null ? "Calcite federado" : "MySQL direto"));
-          status.setToolTipText(details + " | " + (directSql(query) == null ? "Calcite federado" : "MySQL direto"));
+              + " | " + executionLabel(query));
+          status.setToolTipText(details + " | " + executionLabel(query));
         } catch (Exception ex) {
           if (CANCEL_REQUESTED.get()) status.setText(" Consulta cancelada. Resultados anteriores preservados.");
           else { status.setText(" Falha na consulta. Resultados anteriores preservados."); showError(ex); }
@@ -2246,6 +2320,8 @@ public class Main {
       return;
     }
     final String original = sql;
+    try { FederatedQuerySupport.validate(original, CONNECTIONS.allProfiles()); }
+    catch (SQLException ex) { showError(ex); return; }
     final DirectSql direct = directSql(original);
     final boolean mysql = direct != null;
     final String explainCommand = mysql
@@ -2262,7 +2338,7 @@ public class Main {
         Connection conn = null;
         Statement stmt = null;
         try {
-          conn = mysql ? SOURCES.get(direct.source()).getConnection() : openQueryConnection();
+          conn = mysql ? SOURCES.get(direct.source()).getConnection() : openQueryConnection(original);
           stmt = conn.createStatement();
           RUNNING_CONNECTION.set(conn);
           RUNNING_STATEMENT.set(stmt);
@@ -2310,7 +2386,7 @@ public class Main {
 
   private static void showExplainDialog(String original, String command, boolean mysql,
                                         DefaultTableModel model, double seconds) {
-    JDialog dialog = new JDialog(frame, "Analise do EXPLAIN - 1.9 - " + (mysql ? "MySQL" : "Calcite"), false);
+    JDialog dialog = new JDialog(frame, "Analise do EXPLAIN - 2.5.1 - " + (mysql ? "MySQL" : "Calcite"), false);
     dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
     JPanel panel = new JPanel(new BorderLayout(8, 8));
     panel.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
@@ -2468,6 +2544,7 @@ public class Main {
         for (int index = 0; index < commands.size(); index++) {
           if (isCancelled() || Thread.currentThread().isInterrupted()) break;
           String sql = commands.get(index);
+          FederatedQuerySupport.validate(sql, CONNECTIONS.allProfiles());
           long started = System.nanoTime();
           Connection connection = null;
           Statement stmt = null;
@@ -2477,19 +2554,28 @@ public class Main {
             RUNNING_CONNECTION.set(connection);
             RUNNING_STATEMENT.set(stmt);
             if (isCancelled()) break;
-            stmt.setMaxRows(pageSize);
+            NativeSqlRouter.Route nativeQuery = nativeRoute(sql);
+            NativeJdbcPaging.Window nativeWindow = nativeQuery == null ? null
+                : NativeJdbcPaging.window(sql, 0, pageSize);
+            if (nativeWindow != null) NativeJdbcPaging.configure(stmt, nativeWindow);
+            else stmt.setMaxRows(pageSize);
             stmt.setQueryTimeout(120);
-            configureFetch(stmt, sql, pageSize);
+            if (nativeWindow == null) configureFetch(stmt, sql, pageSize);
             boolean hasResult = stmt.execute(isPageableSql(sql) ? firstPageSql(sql, pageSize) : executableSql(sql));
             DefaultTableModel model = null;
             int updated = -1;
             if (hasResult) {
               try (ResultSet rs = stmt.getResultSet()) {
-                model = SqlResultModels.readResultModel(rs, pageSize, this::isCancelled);
+                model = nativeWindow == null
+                    ? SqlResultModels.readResultModel(rs, pageSize, this::isCancelled)
+                    : NativeJdbcPaging.read(rs, nativeWindow, this::isCancelled);
               }
             } else updated = stmt.getUpdateCount();
             if (isCancelled() || Thread.currentThread().isInterrupted()) break;
             publish(new ScriptResult(model, (System.nanoTime() - started) / 1_000_000_000.0, index + 1, updated));
+          } catch (SQLException ex) {
+            throw nativeRoute(sql) == null && directSql(sql) == null
+                ? FederatedQuerySupport.explain(ex) : ex;
           } finally {
             RUNNING_STATEMENT.compareAndSet(stmt, null);
             RUNNING_CONNECTION.compareAndSet(connection, null);

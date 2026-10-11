@@ -21,7 +21,7 @@ import java.util.Set;
 
 /**
  * Registro de fontes JDBC do Studio. O formato legado sem "type" continua MySQL.
- * A execucao de SQL nativo nao-MySQL sera expandida nas proximas versoes.
+ * A execucao de SQL nativo multibanco e delegada a NativeSqlRouter.
  */
 final class SqlConnectionRegistry {
   private static final ObjectMapper JSON = new ObjectMapper();
@@ -42,6 +42,10 @@ final class SqlConnectionRegistry {
     for (JdbcConnectionProfile profile : profiles.values())
       if (profile.type() == SqlDatabaseType.MYSQL) names.add(profile.name());
     return names;
+  }
+
+  synchronized List<JdbcConnectionProfile> allProfiles() {
+    return new ArrayList<>(profiles.values());
   }
 
   /** Nao mantem a senha em arquivo; no EXE ela pode ser solicitada uma vez por recarga. */
@@ -66,10 +70,13 @@ final class SqlConnectionRegistry {
     ds.setUrl(profile.resolvedJdbcUrl());
     ds.setUsername(profile.user());
     ds.setPassword(password);
-    ds.setMaxTotal(2);
-    ds.setMaxIdle(1);
+    // Calcite pode requisitar conexoes simultaneas para metadados e etapas
+    // de subconsultas/JOINS na mesma origem. As conexoes sao abertas sob demanda.
+    // Um limite de 2 provocava exaustao do pool em consultas com 4+ fontes.
+    ds.setMaxTotal(8);
+    ds.setMaxIdle(3);
     ds.setInitialSize(0);
-    ds.setMaxWaitMillis(15000);
+    ds.setMaxWaitMillis(30000);
     return ds;
   }
 
@@ -86,12 +93,18 @@ final class SqlConnectionRegistry {
   }
 
   /** Cada consulta federada recebe uma conexao independente, preservando cancelamento. */
-  Connection openFederatedQueryConnection() throws SQLException {
+  Connection openFederatedQueryConnection(String sql) throws SQLException {
+    List<JdbcConnectionProfile> profilesSnapshot = allProfiles();
+    FederatedQuerySupport.validate(sql, profilesSnapshot);
+    // Uma consulta com fontes reconhecidas nao precisa registrar bancos nao usados.
+    // Quando nao ha alias de fonte explicito, preservamos o comportamento legado.
+    Set<String> needed = FederatedQuerySupport.sourcesToRegister(sql, profilesSnapshot);
     Connection connection = DriverManager.getConnection("jdbc:calcite:caseSensitive=false");
     try {
       SchemaPlus schemas = connection.unwrap(CalciteConnection.class).getRootSchema();
       synchronized (this) {
         for (Map.Entry<String, BasicDataSource> entry : sources.entrySet()) {
+          if (!needed.contains(entry.getKey().toUpperCase(Locale.ROOT))) continue;
           JdbcConnectionProfile profile = profiles.get(entry.getKey());
           addCalciteSchema(schemas, profile, entry.getValue());
         }

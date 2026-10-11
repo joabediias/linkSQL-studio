@@ -1,4 +1,4 @@
-﻿SantySQL Studio 2.3.0
+﻿SantySQL Studio 2.5.1
 - O arquivo de conexoes da versao instalada fica em:
   %USERPROFILE%\.santysql-studio\config\connections.json
 - Configure suas conexoes pelo menu Conexoes > Gerenciar conexoes.

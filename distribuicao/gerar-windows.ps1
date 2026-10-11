@@ -178,7 +178,7 @@ try {
 
     # Nao incluir nenhum JSON de conexoes no instalador (podem conter dados internos).
     @'
-SantySQL Studio 2.3.0
+SantySQL Studio 2.5.1
 - O arquivo de conexoes da versao instalada fica em:
   %USERPROFILE%\.santysql-studio\config\connections.json
 - Configure suas conexoes pelo menu Conexoes > Gerenciar conexoes.
@@ -192,7 +192,7 @@ SantySQL Studio 2.3.0
     if (Test-Path $icone) { $icones = @('--icon', $icone) }
     # Modulos extras para JDBC, GUI e bibliotecas usadas pelo Calcite.
     $modulos = 'java.desktop,java.sql,java.naming,java.management,java.scripting,java.net.http,java.instrument,java.prefs,java.security.jgss,jdk.crypto.ec,jdk.unsupported'
-    $jpackageBase = @('--name', 'SantySQL-Studio', '--app-version', '2.3.0',
+    $jpackageBase = @('--name', 'SantySQL-Studio', '--app-version', '2.5.1',
         '--vendor', 'SantySQL Studio', '--input', $entrada,
         '--main-jar', $nomeJarDistribuicao, '--main-class', 'br.com.santysqlstudio.Main',
         '--java-options', '-Dsantysql.packaged=true', '--add-modules', $modulos) + $icones
@@ -204,7 +204,7 @@ SantySQL Studio 2.3.0
     Write-Host "Portatil criado: $executavel" -ForegroundColor Green
 
     if (!$SemZip) {
-        $zipPortatil = Join-Path $destino 'SantySQL-Studio-2.3.0-portatil.zip'
+        $zipPortatil = Join-Path $destino 'SantySQL-Studio-2.5.1-portatil.zip'
         Compress-Archive -Path (Join-Path $destino 'SantySQL-Studio') -DestinationPath $zipPortatil -CompressionLevel Optimal -Force
         Write-Host "ZIP portatil: $zipPortatil" -ForegroundColor Green
     }

@@ -1,7 +1,11 @@
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\CsvExportWriter.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\ExplainInsights.java
+E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\FederatedQuerySupport.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\JdbcConnectionProfile.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\Main.java
+E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\NativeJdbcPaging.java
+E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\NativeQueryCount.java
+E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\NativeSqlRouter.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SingleServerSqlRouter.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlCompletionContext.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlConnectionRegistry.java
@@ -9,6 +13,7 @@ E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlDatabaseType.
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlEditorActions.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlEditorShortcutSupport.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlHistoryStore.java
+E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlPageTotals.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlQueryPlanner.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlResultModels.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\StudioGridHeaders.java

@@ -23,19 +23,21 @@ final class TableMetadataDialog {
     catch (SQLException ignored) { return null; }
   }
 
-  private static List<ColumnInfo> fetch(DataSource ds, String table) throws SQLException {
+  private static List<ColumnInfo> fetch(DataSource ds, String table,
+                                        JdbcConnectionProfile profile) throws SQLException {
     try (Connection conn = ds.getConnection()) {
       DatabaseMetaData meta = conn.getMetaData();
-      String catalog = conn.getCatalog();
+      String catalog = profile.catalogFor(conn);
+      String schema = profile.schemaForMetadata();
       Set<String> primary = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
-      try (ResultSet rs = meta.getPrimaryKeys(catalog, null, table)) {
+      try (ResultSet rs = meta.getPrimaryKeys(catalog, schema, table)) {
         while (rs.next()) {
           String key = rs.getString("COLUMN_NAME");
           if (key != null) primary.add(key);
         }
       }
       List<ColumnInfo> columns = new ArrayList<>();
-      try (ResultSet rs = meta.getColumns(catalog, null, table, "%")) {
+      try (ResultSet rs = meta.getColumns(catalog, schema, table, "%")) {
         while (rs.next()) {
           String name = rs.getString("COLUMN_NAME");
           String nullable = optional(rs, "IS_NULLABLE");
@@ -54,7 +56,8 @@ final class TableMetadataDialog {
     }
   }
 
-  static void show(JFrame owner, DataSource source, String server, String table, String column) {
+  static void show(JFrame owner, DataSource source, String server, String table,
+                   String column, JdbcConnectionProfile profile) {
     JDialog dialog = new JDialog(owner, "Estrutura - " + server + "." + table, false);
     dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
     JPanel body = new JPanel(new BorderLayout(8, 10));
@@ -80,7 +83,7 @@ final class TableMetadataDialog {
 
     SwingWorker<List<ColumnInfo>, Void> worker = new SwingWorker<>() {
       protected List<ColumnInfo> doInBackground() throws Exception {
-        return fetch(source, table);
+        return fetch(source, table, profile);
       }
       protected void done() {
         if (!dialog.isDisplayable() || isCancelled()) return;

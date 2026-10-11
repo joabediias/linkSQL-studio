@@ -1,9 +1,11 @@
 br\com\santysqlstudio\Main$33.class
 br\com\santysqlstudio\Main$8.class
+br\com\santysqlstudio\SqlDatabaseType.class
 br\com\santysqlstudio\SqlCompletionContext$Analysis.class
 br\com\santysqlstudio\ExplainInsights.class
 br\com\santysqlstudio\Main$5.class
 br\com\santysqlstudio\Main$17.class
+br\com\santysqlstudio\JdbcConnectionProfile$1.class
 br\com\santysqlstudio\Main$27.class
 br\com\santysqlstudio\StudioLog.class
 br\com\santysqlstudio\SqlCompletionContext$TableRef.class
@@ -16,8 +18,10 @@ br\com\santysqlstudio\Main$CompletionPopup$3.class
 br\com\santysqlstudio\StudioSettings$Snapshot.class
 br\com\santysqlstudio\SqlConnectionRegistry.class
 br\com\santysqlstudio\Main$7.class
+br\com\santysqlstudio\SqlConnectionRegistry$1.class
 br\com\santysqlstudio\SqlEditorShortcutSupport$1.class
 br\com\santysqlstudio\Main$22.class
+br\com\santysqlstudio\JdbcConnectionProfile.class
 br\com\santysqlstudio\Main$16.class
 br\com\santysqlstudio\SqlEditorActions.class
 br\com\santysqlstudio\Main$CompletionPopup.class
@@ -34,10 +38,12 @@ br\com\santysqlstudio\SingleServerSqlRouter.class
 br\com\santysqlstudio\SqlCompletionContext$Reference.class
 br\com\santysqlstudio\Main$28.class
 br\com\santysqlstudio\StudioGridHeaders.class
+br\com\santysqlstudio\SqlDatabaseType$1.class
 br\com\santysqlstudio\SqlHistoryStore.class
 br\com\santysqlstudio\Main$3.class
 br\com\santysqlstudio\Main$25.class
 br\com\santysqlstudio\Main$15.class
+br\com\santysqlstudio\Main$35.class
 br\com\santysqlstudio\SingleServerSqlRouter$Token.class
 br\com\santysqlstudio\SqlQueryPlanner$DirectSql.class
 br\com\santysqlstudio\TableMetadataDialog$ColumnInfo.class

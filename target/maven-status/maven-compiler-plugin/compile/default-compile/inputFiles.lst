@@ -1,9 +1,11 @@
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\CsvExportWriter.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\ExplainInsights.java
+E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\JdbcConnectionProfile.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\Main.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SingleServerSqlRouter.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlCompletionContext.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlConnectionRegistry.java
+E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlDatabaseType.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlEditorActions.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlEditorShortcutSupport.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlHistoryStore.java

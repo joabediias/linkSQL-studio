@@ -74,7 +74,7 @@ public class Main {
     if (GraphicsEnvironment.isHeadless()) return null;
     JPasswordField field = new JPasswordField(24);
     JPanel panel = new JPanel(new BorderLayout(0, 8));
-    panel.add(new JLabel("Senha MySQL (" + variableName + "):"), BorderLayout.NORTH);
+    panel.add(new JLabel("Senha da conexao (" + variableName + "):"), BorderLayout.NORTH);
     panel.add(field, BorderLayout.CENTER);
     int choice = JOptionPane.showConfirmDialog(frame, panel, "Senha da conexao",
         JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE);
@@ -131,10 +131,10 @@ public class Main {
     return directPageSql(direct, sqlWindow(sql), 0, size);
   }
   private static DirectSql directSql(String sql) {
-    return SqlQueryPlanner.directSql(sql, SOURCES.keySet());
+    return SqlQueryPlanner.directSql(sql, CONNECTIONS.mysqlSourceNames());
   }
   private static String executableSql(String sql) {
-    return SqlQueryPlanner.executableSql(sql, SOURCES.keySet());
+    return SqlQueryPlanner.executableSql(sql, CONNECTIONS.mysqlSourceNames());
   }
   // MySQL Connector/J: modo streaming apenas em leituras diretas ilimitadas.
   // Reduz a duplicação do resultado na memória do driver antes de montar a grade.
@@ -453,7 +453,7 @@ public class Main {
     menuBar.add(viewMenu);
     frame.setJMenuBar(menuBar);
 
-    rootNode = new DefaultMutableTreeNode("Conexões MySQL");
+    rootNode = new DefaultMutableTreeNode("Conexões SQL");
     explorer = new JTree(rootNode);
     explorer.setRootVisible(true);
     explorer.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 13));
@@ -609,7 +609,7 @@ public class Main {
     status = new JLabel(" Carregue as conexões para iniciar. | " + formatPageSize(preferredPageSize) + " linhas por página");
     status.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
     JPanel top = new JPanel(new BorderLayout());
-    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado   ·   v2.2.5");
+    JLabel brand = new JLabel("  ◈  SantySQL Studio   /   SQL federado   ·   v2.3");
     brand.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 15));
     brand.setBorder(BorderFactory.createEmptyBorder(12, 10, 8, 10));
     top.add(brand, BorderLayout.NORTH);
@@ -1084,15 +1084,18 @@ public class Main {
     new SwingWorker<List<String>, Void>() {
       protected List<String> doInBackground() throws Exception {
         List<String> found = new ArrayList<>();
-        // A consulta usa os metadados do MySQL e limita o retorno a 300 colunas.
-        String sql = "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM information_schema.COLUMNS "
-            + "WHERE TABLE_SCHEMA = DATABASE() AND LOWER(COLUMN_NAME) LIKE ? ESCAPE '!' "
-            + "ORDER BY TABLE_NAME, ORDINAL_POSITION LIMIT 300";
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
-          ps.setString(1, "%" + term.toLowerCase(Locale.ROOT).replace("!", "!!")
-              .replace("%", "!%").replace("_", "!_") + "%");
-          try (ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) found.add(rs.getString(1) + "." + rs.getString(2) + "  :  " + rs.getString(3));
+        // JDBC DatabaseMetaData permite pesquisar sem SQL especifico de cada fornecedor.
+        JdbcConnectionProfile profile = CONNECTIONS.profile(server);
+        try (Connection c = ds.getConnection()) {
+          DatabaseMetaData md = c.getMetaData();
+          try (ResultSet rs = md.getColumns(profile.catalogFor(c),
+              profile.schemaForMetadata(), "%", "%")) {
+            while (rs.next() && found.size() < 300) {
+              String column = rs.getString("COLUMN_NAME");
+              if (column != null && column.toLowerCase(Locale.ROOT).contains(term.toLowerCase(Locale.ROOT))) {
+                found.add(rs.getString("TABLE_NAME") + "." + column + "  :  " + rs.getString("TYPE_NAME"));
+              }
+            }
           }
         }
         return found;
@@ -1138,8 +1141,10 @@ public class Main {
     new SwingWorker<List<String>, Void>() {
       protected List<String> doInBackground() throws Exception {
         List<String> names = new ArrayList<>();
+        JdbcConnectionProfile profile = CONNECTIONS.profile(source);
         try (Connection c = ds.getConnection();
-             ResultSet rs = c.getMetaData().getTables(c.getCatalog(), null, "%", new String[]{"TABLE", "VIEW"})) {
+             ResultSet rs = c.getMetaData().getTables(profile.catalogFor(c),
+                 profile.schemaForMetadata(), "%", new String[]{"TABLE", "VIEW"})) {
           while (rs.next()) names.add(rs.getString("TABLE_NAME"));
         }
         names.sort(String.CASE_INSENSITIVE_ORDER);
@@ -1164,8 +1169,10 @@ public class Main {
     new SwingWorker<List<String>, Void>() {
       protected List<String> doInBackground() throws Exception {
         List<String> names = new ArrayList<>();
+        JdbcConnectionProfile profile = CONNECTIONS.profile(source);
         try (Connection c = ds.getConnection();
-             ResultSet rs = c.getMetaData().getColumns(c.getCatalog(), null, table, "%")) {
+             ResultSet rs = c.getMetaData().getColumns(profile.catalogFor(c),
+                 profile.schemaForMetadata(), table, "%")) {
           while (rs.next()) names.add(rs.getString("COLUMN_NAME"));
         }
         return names;
@@ -1430,7 +1437,10 @@ public class Main {
     new SwingWorker<List<String>, Void>() {
       protected List<String> doInBackground() throws Exception {
         List<String> tables = new ArrayList<>();
-        try (Connection c = SOURCES.get(name).getConnection(); ResultSet rs = c.getMetaData().getTables(c.getCatalog(), null, "%", new String[]{"TABLE", "VIEW"})) {
+        JdbcConnectionProfile profile = CONNECTIONS.profile(name);
+        try (Connection c = SOURCES.get(name).getConnection();
+             ResultSet rs = c.getMetaData().getTables(profile.catalogFor(c),
+                 profile.schemaForMetadata(), "%", new String[]{"TABLE", "VIEW"})) {
           while (rs.next()) tables.add(rs.getString("TABLE_NAME"));
         }
         Collections.sort(tables);
@@ -1474,7 +1484,8 @@ public class Main {
       protected List<String> doInBackground() throws Exception {
         List<String> columns = new ArrayList<>();
         try (Connection c = SOURCES.get(table.source).getConnection();
-             ResultSet rs = c.getMetaData().getColumns(c.getCatalog(), null, table.table, "%")) {
+             ResultSet rs = c.getMetaData().getColumns(CONNECTIONS.profile(table.source).catalogFor(c),
+                 CONNECTIONS.profile(table.source).schemaForMetadata(), table.table, "%")) {
           while (rs.next()) {
             String name = rs.getString("COLUMN_NAME");
             String type = rs.getString("TYPE_NAME");
@@ -2205,7 +2216,8 @@ public class Main {
       status.setText(" Conexao indisponivel para " + table.source + ".");
       return;
     }
-    TableMetadataDialog.show(frame, source, table.source, table.table, selectedColumn);
+    TableMetadataDialog.show(frame, source, table.source, table.table, selectedColumn,
+        CONNECTIONS.profile(table.source));
   }
 
   // EXPLAIN e somente-leitura: o comando SQL original nao e executado aqui.
@@ -2558,6 +2570,24 @@ public class Main {
     } catch (Exception ex) { showError(ex); }
   }
 
+  private static JdbcConnectionProfile profileFromForm(JTextField name, JComboBox<SqlDatabaseType> type,
+      JTextField host, JTextField port, JTextField database, JTextField schema,
+      JTextField user, JTextField env, JTextField jdbcUrl, boolean readOnly) {
+    SqlDatabaseType selected = (SqlDatabaseType) type.getSelectedItem();
+    int parsedPort;
+    try {
+      String portText = port.getText().trim();
+      parsedPort = portText.isBlank() && !jdbcUrl.getText().isBlank()
+          ? selected.defaultPort() : Integer.parseInt(portText);
+    } catch (NumberFormatException ex) { throw new IllegalArgumentException("Porta invalida."); }
+    JdbcConnectionProfile profile = new JdbcConnectionProfile(
+        name.getText().trim(), selected, host.getText().trim(), parsedPort,
+        database.getText().trim(), schema.getText().trim(), user.getText().trim(),
+        env.getText().trim(), jdbcUrl.getText().trim(), readOnly);
+    profile.validate();
+    return profile;
+  }
+
   private static void manageConnections() {
     try {
       ObjectNode document;
@@ -2567,45 +2597,108 @@ public class Main {
       String[] labels = new String[list.size()];
       for (int i = 0; i < labels.length; i++) labels[i] = list.get(i).path("name").asText();
       String[] actions = {"Adicionar", "Editar", "Excluir", "Cancelar"};
-      int action = JOptionPane.showOptionDialog(frame, "Conexões configuradas: " + String.join(", ", labels) + "\nArquivo: " + configPath,
-          "Gerenciar conexões", JOptionPane.DEFAULT_OPTION, JOptionPane.PLAIN_MESSAGE, null, actions, actions[0]);
+      int action = JOptionPane.showOptionDialog(frame,
+          "Conexões configuradas: " + String.join(", ", labels) + "\nArquivo: " + configPath,
+          "Gerenciar conexões", JOptionPane.DEFAULT_OPTION, JOptionPane.PLAIN_MESSAGE,
+          null, actions, actions[0]);
       if (action == 3 || action == JOptionPane.CLOSED_OPTION) return;
       int index = -1;
       if (action == 1 || action == 2) {
         if (labels.length == 0) { JOptionPane.showMessageDialog(frame, "Não há conexões cadastradas."); return; }
-        Object selected = JOptionPane.showInputDialog(frame, "Selecione a conexão", "Conexões", JOptionPane.PLAIN_MESSAGE, null, labels, labels[0]);
+        Object selected = JOptionPane.showInputDialog(frame, "Selecione a conexão", "Conexões",
+            JOptionPane.PLAIN_MESSAGE, null, labels, labels[0]);
         if (selected == null) return;
         for (int i = 0; i < labels.length; i++) if (labels[i].equals(selected)) index = i;
       }
       if (action == 2) {
-        if (JOptionPane.showConfirmDialog(frame, "Excluir " + labels[index] + "?", "Confirmar", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
+        if (JOptionPane.showConfirmDialog(frame, "Excluir " + labels[index] + "?", "Confirmar",
+            JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
         list.remove(index);
       } else {
         JsonNode previous = index < 0 ? JSON.createObjectNode() : list.get(index);
+        SqlDatabaseType oldType = SqlDatabaseType.fromCode(previous.path("type").asText("MYSQL"));
+        JComboBox<SqlDatabaseType> type = new JComboBox<>(SqlDatabaseType.values());
+        type.setSelectedItem(oldType);
         JTextField name = new JTextField(previous.path("name").asText(), 23);
         JTextField host = new JTextField(previous.path("host").asText(), 23);
-        JTextField port = new JTextField(previous.path("port").asText("4407"), 23);
+        JTextField port = new JTextField(previous.path("port").asText(String.valueOf(
+            previous.has("name") && !previous.has("type") ? 4407 : oldType.defaultPort())), 23);
         JTextField database = new JTextField(previous.path("database").asText(), 23);
+        JTextField schema = new JTextField(previous.path("schema").asText(), 23);
         JTextField user = new JTextField(previous.path("user").asText("consulta"), 23);
-        JTextField env = new JTextField(previous.path("passwordEnv").asText("SQLBRIDGE_MYSQL_PASSWORD"), 23);
+        JTextField env = new JTextField(previous.path("passwordEnv").asText(
+            oldType == SqlDatabaseType.MYSQL ? "SQLBRIDGE_MYSQL_PASSWORD" : "SANTYSQL_DB_PASSWORD"), 23);
+        JTextField jdbcUrl = new JTextField(previous.path("jdbcUrl").asText(), 23);
+        type.addActionListener(e -> {
+          SqlDatabaseType chosen = (SqlDatabaseType) type.getSelectedItem();
+          if (chosen != null && indexForDefaultPort(port.getText())) port.setText(String.valueOf(chosen.defaultPort()));
+        });
         JPanel form = new JPanel(new GridLayout(0, 2, 7, 7));
-        for (Object[] field : new Object[][]{{"Nome", name}, {"Host/IP", host}, {"Porta", port}, {"Banco", database}, {"Usuário", user}, {"Variável de senha", env}}) {
+        form.add(new JLabel("Tipo de banco")); form.add(type);
+        for (Object[] field : new Object[][] {
+            {"Nome da conexão", name}, {"Host / IP", host}, {"Porta", port},
+            {"Banco / serviço / arquivo", database}, {"Schema (opcional)", schema},
+            {"Usuário", user}, {"Variável da senha", env},
+            {"URL JDBC personalizada (opcional)", jdbcUrl}}) {
           form.add(new JLabel((String) field[0])); form.add((JTextField) field[1]);
         }
-        if (JOptionPane.showConfirmDialog(frame, form, "Dados da conexão", JOptionPane.OK_CANCEL_OPTION) != JOptionPane.OK_OPTION) return;
-        if (!name.getText().matches("[A-Za-z][A-Za-z0-9_]*") || host.getText().isBlank() || database.getText().isBlank() || env.getText().isBlank()) {
-          JOptionPane.showMessageDialog(frame, "Preencha os campos obrigatórios e use nome sem espaços."); return;
+        form.add(new JLabel("Permissão padrão"));
+        form.add(new JLabel("Somente leitura (permissões pelo usuário do banco)"));
+        JButton testButton = new JButton("Testar conexão");
+        form.add(new JLabel("Verificação")); form.add(testButton);
+        testButton.addActionListener(e -> {
+          try {
+            JdbcConnectionProfile candidate = profileFromForm(name, type, host, port,
+                database, schema, user, env, jdbcUrl, true);
+            String password = System.getenv(candidate.passwordEnv());
+            if (password == null || password.isEmpty())
+              password = promptConnectionPassword(candidate.passwordEnv());
+            if (password == null || password.isEmpty()) return;
+            final String selectedPassword = password;
+            testButton.setEnabled(false);
+            new SwingWorker<String, Void>() {
+              protected String doInBackground() throws Exception {
+                return CONNECTIONS.test(candidate, selectedPassword);
+              }
+              protected void done() {
+                testButton.setEnabled(true);
+                try { JOptionPane.showMessageDialog(frame, "Conexão estabelecida: " + get(),
+                    "Teste de conexão", JOptionPane.INFORMATION_MESSAGE); }
+                catch (Exception error) { showError(error); }
+              }
+            }.execute();
+          } catch (Exception error) { showError(error); }
+        });
+        JScrollPane formScroll = new JScrollPane(form);
+        formScroll.setPreferredSize(new Dimension(750, 415));
+        if (JOptionPane.showConfirmDialog(frame, formScroll, "Dados da conexão",
+            JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) return;
+        JdbcConnectionProfile profile = profileFromForm(name, type, host, port,
+            database, schema, user, env, jdbcUrl, previous.path("readOnly").asBoolean(true));
+        for (int i = 0; i < list.size(); i++) {
+          if (i != index && list.get(i).path("name").asText().equalsIgnoreCase(profile.name()))
+            throw new IllegalArgumentException("Ja existe uma conexao chamada " + profile.name());
         }
         ObjectNode item = JSON.createObjectNode();
-        item.put("name", name.getText().trim()); item.put("host", host.getText().trim());
-        item.put("port", Integer.parseInt(port.getText().trim())); item.put("database", database.getText().trim());
-        item.put("user", user.getText().trim()); item.put("passwordEnv", env.getText().trim());
+        item.put("name", profile.name()); item.put("type", profile.type().name());
+        item.put("host", profile.host()); item.put("port", profile.port());
+        item.put("database", profile.database()); item.put("schema", profile.schema());
+        item.put("user", profile.user()); item.put("passwordEnv", profile.passwordEnv());
+        item.put("jdbcUrl", profile.jdbcUrl()); item.put("readOnly", profile.readOnly());
         if (index < 0) list.add(item); else list.set(index, item);
       }
       Files.createDirectories(configPath.toAbsolutePath().getParent());
       JSON.writerWithDefaultPrettyPrinter().writeValue(configPath.toFile(), document);
       status.setText(" Configuração salva em " + configPath + ". Clique em Carregar conexões para atualizar.");
     } catch (Exception ex) { showError(ex); }
+  }
+
+  private static boolean indexForDefaultPort(String text) {
+    try {
+      int port = Integer.parseInt(text.strip());
+      for (SqlDatabaseType type : SqlDatabaseType.values()) if (type.defaultPort() == port) return true;
+    } catch (NumberFormatException ignored) {}
+    return false;
   }
 
   private static synchronized void configure(Path path) throws Exception {
@@ -2627,7 +2720,10 @@ public class Main {
     final String name;
     boolean loaded;
     SourceNode(String name) { this.name = name; }
-    public String toString() { return name; }
+    public String toString() {
+      JdbcConnectionProfile profile = CONNECTIONS.profile(name);
+      return name + (profile == null ? "" : "  [" + profile.type() + "]");
+    }
   }
   private static class TableNode {
     final String source, table;

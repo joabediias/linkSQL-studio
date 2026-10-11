@@ -57,10 +57,74 @@ final class SqlQueryPlanner {
     return direct.sql();
   }
   static boolean isPageableSql(String sql) {
+    if (sql == null || sql.isBlank()) return false;
+    // Um FETCH/LIMIT/OFFSET dentro de subconsulta ou CTE nao limita o resultado
+    // principal. Verificar apenas clausulas do nivel externo do SQL.
     String normalized = sql.stripLeading().toUpperCase(Locale.ROOT);
-    if (!(normalized.startsWith("SELECT ") || normalized.startsWith("WITH "))) return false;
+    if (!normalized.matches("(?s)^(?:SELECT|WITH)\\b.*")) return false;
     SqlWindow window = sqlWindow(sql);
-    return window.maxRows() != null || !normalized.matches("(?s).*\\b(?:FETCH\\s+(?:FIRST|NEXT)|LIMIT|OFFSET)\\b.*");
+    return window.maxRows() != null || !hasTopLevelRowWindow(sql);
+  }
+
+  /** Identifica palavras de paginacao apenas no nivel externo do SELECT. */
+  private static boolean hasTopLevelRowWindow(String sql) {
+    int depth = 0;
+    for (int i = 0; i < sql.length();) {
+      char ch = sql.charAt(i);
+      if (ch == '-' && i + 1 < sql.length() && sql.charAt(i + 1) == '-') {
+        i += 2;
+        while (i < sql.length() && sql.charAt(i) != '\n') i++;
+        continue;
+      }
+      if (ch == '#') {
+        while (i < sql.length() && sql.charAt(i) != '\n') i++;
+        continue;
+      }
+      if (ch == '/' && i + 1 < sql.length() && sql.charAt(i + 1) == '*') {
+        int end = sql.indexOf("*/", i + 2);
+        if (end < 0) return true; // Consulta incompleta: nao tentar paginar.
+        i = end + 2; continue;
+      }
+      if (ch == '\'' || ch == '"' || ch == '`' || ch == '[') {
+        char close = ch == '[' ? ']' : ch;
+        i++;
+        boolean finished = false;
+        while (i < sql.length()) {
+          char c = sql.charAt(i++);
+          if (c == close) {
+            if (i < sql.length() && sql.charAt(i) == close) { i++; continue; }
+            finished = true; break;
+          }
+          if (ch == '\'' && c == '\\' && i < sql.length()) i++;
+        }
+        if (!finished) return true;
+        continue;
+      }
+      // PostgreSQL: $$...$$ e $tag$...$tag$ nao devem ser analisados como SQL.
+      if (ch == '$') {
+        int j = i + 1;
+        while (j < sql.length() && (Character.isLetterOrDigit(sql.charAt(j)) || sql.charAt(j) == '_')) j++;
+        if (j < sql.length() && sql.charAt(j) == '$') {
+          String tag = sql.substring(i, j + 1);
+          int end = sql.indexOf(tag, j + 1);
+          if (end < 0) return true;
+          i = end + tag.length(); continue;
+        }
+      }
+      if (ch == '(') { depth++; i++; continue; }
+      if (ch == ')') { if (depth == 0) return true; depth--; i++; continue; }
+      if (Character.isLetter(ch) || ch == '_') {
+        int begin = i++;
+        while (i < sql.length() && (Character.isLetterOrDigit(sql.charAt(i)) || sql.charAt(i) == '_')) i++;
+        if (depth == 0) {
+          String word = sql.substring(begin, i).toUpperCase(Locale.ROOT);
+          if (word.equals("FETCH") || word.equals("LIMIT") || word.equals("OFFSET")) return true;
+        }
+        continue;
+      }
+      i++;
+    }
+    return depth != 0; // SQL desbalanceado: comportamento conservador.
   }
 
 }

@@ -25,18 +25,33 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
     }
   }
 
-  private static String resolvePassword(String key) {
+  private static String resolvePassword(JdbcConnectionProfile profile) {
+    String key = profile.name().toUpperCase(java.util.Locale.ROOT);
     String cached = SESSION_PASSWORDS.get(key);
     if (cached != null) return cached;
     if (java.awt.GraphicsEnvironment.isHeadless()) return null;
     final String[] value = new String[1];
     Runnable ask = () -> {
       JPasswordField pwd = new JPasswordField(24);
-      int answer = JOptionPane.showConfirmDialog(null, pwd,
-          "LinkSQL JDBC - senha para " + key, JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE);
+      javax.swing.JCheckBox keep = new javax.swing.JCheckBox("Lembrar senha protegida no Windows", true);
+      javax.swing.JPanel panel = new javax.swing.JPanel(new java.awt.BorderLayout(0, 8));
+      panel.add(new javax.swing.JLabel("Senha: " + profile.name() + " (" + profile.type() + ")"), java.awt.BorderLayout.NORTH);
+      panel.add(pwd, java.awt.BorderLayout.CENTER);
+      panel.add(keep, java.awt.BorderLayout.SOUTH);
+      int answer = JOptionPane.showConfirmDialog(null, panel,
+          "LinkSQL JDBC - senha da conexão", JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE);
       if (answer == JOptionPane.OK_OPTION) {
         char[] chars = pwd.getPassword();
-        value[0] = new String(chars);
+        if (chars.length != 0) {
+          if (keep.isSelected()) {
+            try { ConnectionVault.save(profile.name(), chars, ConnectionVault.Duration.PERMANENT); }
+            catch (java.io.IOException ex) {
+              JOptionPane.showMessageDialog(null, "Nao foi possivel proteger a senha: " + ex.getMessage(),
+                  "LinkSQL JDBC", JOptionPane.WARNING_MESSAGE);
+            }
+          }
+          value[0] = new String(chars);
+        }
         java.util.Arrays.fill(chars, '\0');
       }
     };

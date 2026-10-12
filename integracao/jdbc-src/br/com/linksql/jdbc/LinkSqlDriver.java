@@ -71,7 +71,7 @@ public final class LinkSqlDriver implements Driver {
     return new DriverPropertyInfo[] { config };
   }
   @Override public int getMajorVersion() { return 0; }
-  @Override public int getMinorVersion() { return 4; }
+  @Override public int getMinorVersion() { return 5; }
   @Override public boolean jdbcCompliant() { return false; }
   @Override public Logger getParentLogger() { return Logger.getLogger("br.com.linksql.jdbc"); }
 }

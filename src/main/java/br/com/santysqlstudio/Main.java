@@ -42,23 +42,28 @@ public class Main {
   private static final Map<String, BasicDataSource> SOURCES = CONNECTIONS.sources();
   private static Connection federation;
   private static Path configPath = defaultConfigPath();
-  // Instalacao jpackage: configs pertencem ao usuario, nunca a Program Files.
-  // O projeto Maven continua usando a configuracao relativa anterior.
+  /** Perfis persistentes por usuario (compatíveis com LinkSQL JDBC). */
   private static Path defaultConfigPath() {
-    if (!Boolean.getBoolean("santysql.packaged"))
-      return Paths.get("config", "connections.example.json");
     Path userConfig = Paths.get(System.getProperty("user.home"), ".santysql-studio",
         "config", "connections.json");
     try {
       Files.createDirectories(userConfig.getParent());
-      if (!Files.exists(userConfig))
-        Files.writeString(userConfig, "{\n  \"connections\": []\n}\n", StandardCharsets.UTF_8,
+      if (!Files.exists(userConfig)) {
+        // Importacao automatica nao destrutiva da base Maven antiga.
+        Path legacy = Paths.get("config", "connections.json");
+        if (!Files.isRegularFile(legacy)) legacy = Paths.get("config", "connections.example.json");
+        if (Files.isRegularFile(legacy)) Files.copy(legacy, userConfig);
+        else Files.writeString(userConfig, "{\n  \"connections\": []\n}\n", StandardCharsets.UTF_8,
             StandardOpenOption.CREATE_NEW);
-    } catch (IOException ex) {
-      // A tela Gerenciar conexoes mostrara um eventual erro de permissao.
-      System.err.println("Nao foi possivel iniciar configuracao do usuario: " + ex.getMessage());
-    }
+      }
+    } catch (IOException ex) { System.err.println("Falha ao preparar perfis LinkSQL: " + ex.getMessage()); }
     return userConfig;
+  }
+
+  private static List<String> connectionNames() {
+    List<String> names = new ArrayList<>();
+    for (JdbcConnectionProfile profile : CONNECTIONS.allProfiles()) names.add(profile.name());
+    return names;
   }
 
   private static File defaultUserFile(String filename) {
@@ -68,20 +73,47 @@ public class Main {
     return folder.resolve(filename).toFile();
   }
 
-  // Quando o EXE e aberto pelo menu Iniciar, a senha de um PowerShell anterior
-  // nao esta disponivel. Solicita apenas para a sessao, sem salvar no JSON.
-  private static String promptConnectionPassword(String variableName) {
+  /** Pergunta somente ao acessar o banco e oferece armazenamento seguro permanente. */
+  private static String promptConnectionPassword(JdbcConnectionProfile profile) {
     if (GraphicsEnvironment.isHeadless()) return null;
-    JPasswordField field = new JPasswordField(24);
-    JPanel panel = new JPanel(new BorderLayout(0, 8));
-    panel.add(new JLabel("Senha da conexao (" + variableName + "):"), BorderLayout.NORTH);
-    panel.add(field, BorderLayout.CENTER);
-    int choice = JOptionPane.showConfirmDialog(frame, panel, "Senha da conexao",
-        JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE);
-    if (choice != JOptionPane.OK_OPTION) return null;
-    char[] characters = field.getPassword();
-    try { return characters.length == 0 ? null : new String(characters); }
-    finally { java.util.Arrays.fill(characters, '\0'); field.setText(""); }
+    final String[] answer = new String[1];
+    final boolean[] persist = new boolean[1];
+    Runnable dialog = () -> {
+      JPasswordField field = new JPasswordField(24);
+      JCheckBox remember = new JCheckBox("Lembrar senha protegida no Windows", true);
+      JPanel panel = new JPanel(new BorderLayout(0, 9));
+      panel.add(new JLabel("Senha de " + profile.name() + " (" + profile.type() + "):"), BorderLayout.NORTH);
+      panel.add(field, BorderLayout.CENTER);
+      panel.add(remember, BorderLayout.SOUTH);
+      int choice = JOptionPane.showConfirmDialog(frame, panel, "Credenciais da conexão",
+          JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE);
+      if (choice != JOptionPane.OK_OPTION) return;
+      char[] characters = field.getPassword();
+      try {
+        if (characters.length == 0) return;
+        // Somente captura a senha no EDT; DPAPI é executada na thread de trabalho.
+        persist[0] = remember.isSelected();
+        answer[0] = new String(characters);
+      } finally { Arrays.fill(characters, '\0'); field.setText(""); }
+    };
+    try {
+      if (SwingUtilities.isEventDispatchThread()) dialog.run();
+      else SwingUtilities.invokeAndWait(dialog);
+    } catch (Exception ex) { return null; }
+    if (persist[0] && answer[0] != null) {
+      final Runnable encryption = () -> {
+        char[] secret = answer[0].toCharArray();
+        try { ConnectionVault.save(profile.name(), secret, ConnectionVault.Duration.PERMANENT); }
+        catch (IOException ex) {
+          SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(frame,
+              "Não foi possível salvar a senha protegida: " + ex.getMessage(),
+              "LinkSQL", JOptionPane.WARNING_MESSAGE));
+        } finally { Arrays.fill(secret, '\0'); }
+      };
+      if (SwingUtilities.isEventDispatchThread()) new Thread(encryption, "linksql-salvar-credencial").start();
+      else encryption.run();
+    }
+    return answer[0];
   }
 
   private static final int DEFAULT_PAGE_SIZE = StudioSettings.DEFAULT_PAGE_SIZE;
@@ -163,9 +195,9 @@ public class Main {
   }
   private static Connection queryConnectionFor(String sql) throws SQLException {
     NativeSqlRouter.Route nativeRoute = nativeRoute(sql);
-    if (nativeRoute != null) return SOURCES.get(nativeRoute.source()).getConnection();
+    if (nativeRoute != null) return CONNECTIONS.source(nativeRoute.source()).getConnection();
     DirectSql direct = directSql(sql);
-    return direct == null ? openQueryConnection(sql) : SOURCES.get(direct.source()).getConnection();
+    return direct == null ? openQueryConnection(sql) : CONNECTIONS.source(direct.source()).getConnection();
   }
   private static java.util.Map<Integer, DefaultTableModel> pageCache(JScrollPane scroll) {
     @SuppressWarnings("unchecked")
@@ -247,7 +279,7 @@ public class Main {
             if (conn != null) try { conn.close(); } catch (SQLException ignored) {}
           }, FEDERATED_COUNT_TIMEOUT, java.util.concurrent.TimeUnit.SECONDS);
         }
-        try (Connection conn = federated ? openQueryConnection(sql) : SOURCES.get(source).getConnection()) {
+        try (Connection conn = federated ? openQueryConnection(sql) : CONNECTIONS.source(source).getConnection()) {
           countConnection.set(conn);
           try (Statement st = conn.createStatement()) {
             countStatement.set(st);
@@ -400,7 +432,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("LinkSQL - 2.7.1");
+    frame = new JFrame("LinkSQL - 2.8.2");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -420,7 +452,7 @@ public class Main {
     frame.setMinimumSize(new Dimension(900, 600));
     frame.setLocationRelativeTo(null);
 
-    JButton load = new JButton("Carregar conexões");
+    JButton load = new JButton("Nova conexão");
     JButton manage = new JButton("Gerenciar conexões");
     JButton searchColumns = new JButton("Buscar coluna");
     JButton newTab = new JButton("Nova aba SQL");
@@ -489,7 +521,9 @@ public class Main {
     menuBar.add(resultMenu);
 
     JMenu connectionsMenu = new JMenu("Conexoes");
-    addMenuAction(connectionsMenu, "Carregar conexoes", load);
+    JMenuItem importProfiles = new JMenuItem("Importar perfis de arquivo...");
+    importProfiles.addActionListener(e -> chooseAndLoad());
+    connectionsMenu.add(importProfiles);
     addMenuAction(connectionsMenu, "Gerenciar conexoes", manage);
     addMenuAction(connectionsMenu, "Buscar coluna", searchColumns);
     JMenuItem structure = new JMenuItem("Estrutura da tabela selecionada...");
@@ -673,7 +707,7 @@ public class Main {
     status = new JLabel(" Carregue as conexões para iniciar. | " + formatPageSize(preferredPageSize) + " linhas por página");
     status.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
     JPanel top = new JPanel(new BorderLayout());
-    JLabel brand = new JLabel("  ◈  LinkSQL   /   SQL federado   ·   v2.7.1");
+    JLabel brand = new JLabel("  ◈  LinkSQL   /   SQL federado   ·   v2.8.2");
     brand.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 15));
     brand.setBorder(BorderFactory.createEmptyBorder(12, 10, 8, 10));
     top.add(brand, BorderLayout.NORTH);
@@ -682,7 +716,7 @@ public class Main {
     frame.add(horizontal, BorderLayout.CENTER);
     frame.add(status, BorderLayout.SOUTH);
 
-    load.addActionListener(e -> chooseAndLoad());
+    load.addActionListener(e -> manageConnections());
     manage.addActionListener(e -> manageConnections());
     newTab.addActionListener(e -> addSqlTab());
     openSql.addActionListener(e -> openSqlFile());
@@ -697,6 +731,7 @@ public class Main {
     export.addActionListener(e -> exportCsv());
     themeButton.addActionListener(e -> toggleTheme());
     frame.setVisible(true);
+    loadConfiguration();
   }
 
   private static void addMenuAction(JMenu menu, String label, JButton actionButton) {
@@ -1124,11 +1159,11 @@ public class Main {
 
   // Pesquisa sob demanda no catálogo do servidor, sem carregar todas as colunas na memória.
   private static void searchColumnsAcrossTables() {
-    if (SOURCES.isEmpty()) {
-      JOptionPane.showMessageDialog(frame, "Carregue as conexões primeiro.");
+    if (connectionNames().isEmpty()) {
+      JOptionPane.showMessageDialog(frame, "Cadastre uma conexão primeiro.");
       return;
     }
-    JComboBox<String> serverBox = new JComboBox<>(SOURCES.keySet().toArray(new String[0]));
+    JComboBox<String> serverBox = new JComboBox<>(connectionNames().toArray(new String[0]));
     JTextField columnName = new JTextField(22);
     JPanel panel = new JPanel(new GridLayout(2, 2, 8, 8));
     panel.add(new JLabel("Servidor:")); panel.add(serverBox);
@@ -1138,8 +1173,9 @@ public class Main {
     String term = columnName.getText().trim();
     if (term.isEmpty()) return;
     String server = (String) serverBox.getSelectedItem();
-    BasicDataSource ds = SOURCES.get(server);
-    if (ds == null) return;
+    BasicDataSource ds;
+    try { ds = CONNECTIONS.source(server); }
+    catch (SQLException ex) { showError(ex); return; }
     status.setText(" Pesquisando coluna '" + term + "' em " + server + "...");
     new SwingWorker<List<String>, Void>() {
       protected List<String> doInBackground() throws Exception {
@@ -1190,7 +1226,7 @@ public class Main {
   }
 
   private static String resolveSource(String name) {
-    for (String source : SOURCES.keySet()) if (source.equalsIgnoreCase(name)) return source;
+    for (String source : connectionNames()) if (source.equalsIgnoreCase(name)) return source;
     return null;
   }
 
@@ -1273,7 +1309,7 @@ public class Main {
     String qualifier = qualifierMatcher.find() ? qualifierMatcher.group(1) : null;
     String server = qualifier == null ? null : resolveSource(qualifier);
     String contextSql = completionStatement(editor.getText(), caret);
-    SqlCompletionContext.Analysis context = SqlCompletionContext.analyze(contextSql, SOURCES.keySet());
+    SqlCompletionContext.Analysis context = SqlCompletionContext.analyze(contextSql, connectionNames());
     SqlCompletionContext.Reference ref = server == null && qualifier != null ? context.reference(qualifier) : null;
     Set<String> candidates = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
 
@@ -1329,10 +1365,10 @@ public class Main {
       return;
     } else {
       Collections.addAll(candidates, SQL_WORDS);
-      candidates.addAll(SOURCES.keySet());
+      candidates.addAll(connectionNames());
       candidates.addAll(context.cteNames());
       for (List<String> tables : TABLE_CACHE.values()) candidates.addAll(tables);
-      if (allowLoad) for (String source : SOURCES.keySet()) fetchTables(source, null);
+      if (allowLoad) for (String source : connectionNames()) fetchTables(source, null);
       for (SqlCompletionContext.TableRef table : context.tables()) {
         String key = table.source() + "." + table.table();
         List<String> cols = COLUMN_CACHE.get(key);
@@ -1460,26 +1496,51 @@ public class Main {
   }
 
   private static void chooseAndLoad() {
-    JFileChooser chooser = new JFileChooser(configPath.toAbsolutePath().getParent().toFile());
-    chooser.setSelectedFile(configPath.toFile());
-    if (chooser.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
-      configPath = chooser.getSelectedFile().toPath();
+    JFileChooser chooser = new JFileChooser();
+    chooser.setDialogTitle("Importar perfis de conexão (senhas não são importadas)");
+    if (chooser.showOpenDialog(frame) != JFileChooser.APPROVE_OPTION) return;
+    try {
+      Path source = chooser.getSelectedFile().toPath();
+      JsonNode imported = JSON.readTree(Files.readString(source));
+      if (!imported.path("connections").isArray())
+        throw new IOException("Arquivo de perfis inválido.");
+      ObjectNode destination = (ObjectNode) JSON.readTree(Files.readString(configPath));
+      ArrayNode list = (ArrayNode) destination.withArray("connections");
+      Set<String> known = new HashSet<>();
+      for (JsonNode item : list) known.add(item.path("name").asText().toUpperCase(Locale.ROOT));
+      int count = 0;
+      for (JsonNode item : imported.path("connections")) {
+        JdbcConnectionProfile profile = JdbcConnectionProfile.fromJson(item);
+        if (known.add(profile.name().toUpperCase(Locale.ROOT))) {
+          ObjectNode safe = JSON.createObjectNode();
+          safe.put("name", profile.name()); safe.put("type", profile.type().name());
+          safe.put("host", profile.host()); safe.put("port", profile.port());
+          safe.put("database", profile.database()); safe.put("schema", profile.schema());
+          safe.put("user", profile.user()); safe.put("passwordEnv", profile.passwordEnv());
+          safe.put("jdbcUrl", profile.jdbcUrl()); safe.put("readOnly", profile.readOnly());
+          list.add(safe); count++;
+        }
+      }
+      if (count > 0) {
+        Files.createDirectories(configPath.getParent());
+        JSON.writerWithDefaultPrettyPrinter().writeValue(configPath.toFile(), destination);
+      }
       loadConfiguration();
-    }
+      JOptionPane.showMessageDialog(frame, count + " conexão(ões) importada(s). Senhas serão solicitadas somente no uso.");
+    } catch (Exception ex) { showError(ex); }
   }
 
   private static void loadConfiguration() {
     try {
       configure(configPath);
       rebuildTree();
-      for (String server : SOURCES.keySet()) fetchTables(server, null);
-      status.setText(" " + SOURCES.size() + " conexões carregadas de " + configPath.getFileName());
+      status.setText(" " + connectionNames().size() + " conexões prontas. Selecione uma para explorar.");
     } catch (Exception ex) { showError(ex); }
   }
 
   private static void rebuildTree() {
     rootNode.removeAllChildren();
-    for (String name : SOURCES.keySet()) {
+    for (String name : connectionNames()) {
       DefaultMutableTreeNode node = new DefaultMutableTreeNode(new SourceNode(name));
       node.add(new DefaultMutableTreeNode("Expandir para carregar tabelas..."));
       rootNode.add(node);
@@ -1498,7 +1559,7 @@ public class Main {
       protected List<String> doInBackground() throws Exception {
         List<String> tables = new ArrayList<>();
         JdbcConnectionProfile profile = CONNECTIONS.profile(name);
-        try (Connection c = SOURCES.get(name).getConnection();
+        try (Connection c = CONNECTIONS.source(name).getConnection();
              ResultSet rs = c.getMetaData().getTables(profile.catalogFor(c),
                  profile.schemaForMetadata(), "%", new String[]{"TABLE", "VIEW"})) {
           while (rs.next()) tables.add(rs.getString("TABLE_NAME"));
@@ -1543,7 +1604,7 @@ public class Main {
     new SwingWorker<List<String>, Void>() {
       protected List<String> doInBackground() throws Exception {
         List<String> columns = new ArrayList<>();
-        try (Connection c = SOURCES.get(table.source).getConnection();
+        try (Connection c = CONNECTIONS.source(table.source).getConnection();
              ResultSet rs = c.getMetaData().getColumns(CONNECTIONS.profile(table.source).catalogFor(c),
                  CONNECTIONS.profile(table.source).schemaForMetadata(), table.table, "%")) {
           while (rs.next()) {
@@ -2040,8 +2101,8 @@ public class Main {
         Connection conn = null;
         Statement stmt = null;
         try {
-          conn = nativePage != null ? SOURCES.get(nativePage.source()).getConnection()
-              : directPage != null ? SOURCES.get(directPage.source()).getConnection() : openQueryConnection(sql);
+          conn = nativePage != null ? CONNECTIONS.source(nativePage.source()).getConnection()
+              : directPage != null ? CONNECTIONS.source(directPage.source()).getConnection() : openQueryConnection(sql);
           stmt = conn.createStatement();
           RUNNING_CONNECTION.set(conn);
           RUNNING_STATEMENT.set(stmt);
@@ -2213,7 +2274,7 @@ public class Main {
 
   private static void runQuery() {
     JTextArea queryEditor = activeEditor();
-    if (federation == null) { status.setText(" Carregue as conexões primeiro."); queryEditor.requestFocusInWindow(); return; }
+    if (federation == null) { status.setText(" Cadastre uma conexão primeiro."); queryEditor.requestFocusInWindow(); return; }
     if (currentQuery != null && !currentQuery.isDone()) { queryEditor.requestFocusInWindow(); return; }
     String sql = queryEditor.getSelectedText();
     if (sql == null || sql.isBlank()) sql = statementAtCaret(queryEditor);
@@ -2313,7 +2374,9 @@ public class Main {
 
   // Detalhes de tabelas e colunas sao obtidos via JDBC somente no servidor selecionado.
   private static void showTableMetadata(TableNode table, String selectedColumn) {
-    BasicDataSource source = SOURCES.get(table.source);
+    BasicDataSource source;
+    try { source = CONNECTIONS.source(table.source); }
+    catch (SQLException ex) { showError(ex); return; }
     if (source == null) {
       status.setText(" Conexao indisponivel para " + table.source + ".");
       return;
@@ -2357,7 +2420,7 @@ public class Main {
 
   private static void runScript() {
     JTextArea editor = activeEditor();
-    if (federation == null) { status.setText(" Carregue as conexoes primeiro."); return; }
+    if (federation == null) { status.setText(" Cadastre uma conexão primeiro."); return; }
     if (currentQuery != null && !currentQuery.isDone()) return;
     String selected = editor.getSelectedText();
     List<String> commands = splitScript(selected != null && !selected.isBlank() ? selected : editor.getText());
@@ -2491,139 +2554,12 @@ public class Main {
     } catch (Exception ex) { showError(ex); }
   }
 
-  private static JdbcConnectionProfile profileFromForm(JTextField name, JComboBox<SqlDatabaseType> type,
-      JTextField host, JTextField port, JTextField database, JTextField schema,
-      JTextField user, JTextField env, JTextField jdbcUrl, boolean readOnly) {
-    SqlDatabaseType selected = (SqlDatabaseType) type.getSelectedItem();
-    int parsedPort;
-    try {
-      String portText = port.getText().trim();
-      parsedPort = portText.isBlank() && !jdbcUrl.getText().isBlank()
-          ? selected.defaultPort() : Integer.parseInt(portText);
-    } catch (NumberFormatException ex) { throw new IllegalArgumentException("Porta invalida."); }
-    JdbcConnectionProfile profile = new JdbcConnectionProfile(
-        name.getText().trim(), selected, host.getText().trim(), parsedPort,
-        database.getText().trim(), schema.getText().trim(), user.getText().trim(),
-        env.getText().trim(), jdbcUrl.getText().trim(), readOnly);
-    profile.validate();
-    return profile;
-  }
-
   private static void manageConnections() {
-    try {
-      ObjectNode document;
-      if (Files.exists(configPath)) document = (ObjectNode) JSON.readTree(Files.readString(configPath));
-      else { document = JSON.createObjectNode(); document.set("connections", JSON.createArrayNode()); }
-      ArrayNode list = (ArrayNode) document.withArray("connections");
-      String[] labels = new String[list.size()];
-      for (int i = 0; i < labels.length; i++) labels[i] = list.get(i).path("name").asText();
-      String[] actions = {"Adicionar", "Editar", "Excluir", "Cancelar"};
-      int action = JOptionPane.showOptionDialog(frame,
-          "Conexões configuradas: " + String.join(", ", labels) + "\nArquivo: " + configPath,
-          "Gerenciar conexões", JOptionPane.DEFAULT_OPTION, JOptionPane.PLAIN_MESSAGE,
-          null, actions, actions[0]);
-      if (action == 3 || action == JOptionPane.CLOSED_OPTION) return;
-      int index = -1;
-      if (action == 1 || action == 2) {
-        if (labels.length == 0) { JOptionPane.showMessageDialog(frame, "Não há conexões cadastradas."); return; }
-        Object selected = JOptionPane.showInputDialog(frame, "Selecione a conexão", "Conexões",
-            JOptionPane.PLAIN_MESSAGE, null, labels, labels[0]);
-        if (selected == null) return;
-        for (int i = 0; i < labels.length; i++) if (labels[i].equals(selected)) index = i;
-      }
-      if (action == 2) {
-        if (JOptionPane.showConfirmDialog(frame, "Excluir " + labels[index] + "?", "Confirmar",
-            JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
-        list.remove(index);
-      } else {
-        JsonNode previous = index < 0 ? JSON.createObjectNode() : list.get(index);
-        SqlDatabaseType oldType = SqlDatabaseType.fromCode(previous.path("type").asText("MYSQL"));
-        JComboBox<SqlDatabaseType> type = new JComboBox<>(SqlDatabaseType.values());
-        type.setSelectedItem(oldType);
-        JTextField name = new JTextField(previous.path("name").asText(), 23);
-        JTextField host = new JTextField(previous.path("host").asText(), 23);
-        JTextField port = new JTextField(previous.path("port").asText(String.valueOf(
-            previous.has("name") && !previous.has("type") ? 4407 : oldType.defaultPort())), 23);
-        JTextField database = new JTextField(previous.path("database").asText(), 23);
-        JTextField schema = new JTextField(previous.path("schema").asText(), 23);
-        JTextField user = new JTextField(previous.path("user").asText("consulta"), 23);
-        JTextField env = new JTextField(previous.path("passwordEnv").asText(
-            oldType == SqlDatabaseType.MYSQL ? "SQLBRIDGE_MYSQL_PASSWORD" : "SANTYSQL_DB_PASSWORD"), 23);
-        JTextField jdbcUrl = new JTextField(previous.path("jdbcUrl").asText(), 23);
-        type.addActionListener(e -> {
-          SqlDatabaseType chosen = (SqlDatabaseType) type.getSelectedItem();
-          if (chosen != null && indexForDefaultPort(port.getText())) port.setText(String.valueOf(chosen.defaultPort()));
-        });
-        JPanel form = new JPanel(new GridLayout(0, 2, 7, 7));
-        form.add(new JLabel("Tipo de banco")); form.add(type);
-        for (Object[] field : new Object[][] {
-            {"Nome da conexão", name}, {"Host / IP", host}, {"Porta", port},
-            {"Banco / serviço / arquivo", database}, {"Schema (opcional)", schema},
-            {"Usuário", user}, {"Variável da senha", env},
-            {"URL JDBC personalizada (opcional)", jdbcUrl}}) {
-          form.add(new JLabel((String) field[0])); form.add((JTextField) field[1]);
-        }
-        form.add(new JLabel("Permissão padrão"));
-        form.add(new JLabel("Somente leitura (permissões pelo usuário do banco)"));
-        JButton testButton = new JButton("Testar conexão");
-        form.add(new JLabel("Verificação")); form.add(testButton);
-        testButton.addActionListener(e -> {
-          try {
-            JdbcConnectionProfile candidate = profileFromForm(name, type, host, port,
-                database, schema, user, env, jdbcUrl, true);
-            String password = System.getenv(candidate.passwordEnv());
-            if (password == null || password.isEmpty())
-              password = promptConnectionPassword(candidate.passwordEnv());
-            if (password == null || password.isEmpty()) return;
-            final String selectedPassword = password;
-            testButton.setEnabled(false);
-            new SwingWorker<String, Void>() {
-              protected String doInBackground() throws Exception {
-                return CONNECTIONS.test(candidate, selectedPassword);
-              }
-              protected void done() {
-                testButton.setEnabled(true);
-                try { JOptionPane.showMessageDialog(frame, "Conexão estabelecida: " + get(),
-                    "Teste de conexão", JOptionPane.INFORMATION_MESSAGE); }
-                catch (Exception error) { showError(error); }
-              }
-            }.execute();
-          } catch (Exception error) { showError(error); }
-        });
-        JScrollPane formScroll = new JScrollPane(form);
-        formScroll.setPreferredSize(new Dimension(750, 415));
-        if (JOptionPane.showConfirmDialog(frame, formScroll, "Dados da conexão",
-            JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) return;
-        JdbcConnectionProfile profile = profileFromForm(name, type, host, port,
-            database, schema, user, env, jdbcUrl, previous.path("readOnly").asBoolean(true));
-        for (int i = 0; i < list.size(); i++) {
-          if (i != index && list.get(i).path("name").asText().equalsIgnoreCase(profile.name()))
-            throw new IllegalArgumentException("Ja existe uma conexao chamada " + profile.name());
-        }
-        ObjectNode item = JSON.createObjectNode();
-        item.put("name", profile.name()); item.put("type", profile.type().name());
-        item.put("host", profile.host()); item.put("port", profile.port());
-        item.put("database", profile.database()); item.put("schema", profile.schema());
-        item.put("user", profile.user()); item.put("passwordEnv", profile.passwordEnv());
-        item.put("jdbcUrl", profile.jdbcUrl()); item.put("readOnly", profile.readOnly());
-        if (index < 0) list.add(item); else list.set(index, item);
-      }
-      Files.createDirectories(configPath.toAbsolutePath().getParent());
-      JSON.writerWithDefaultPrettyPrinter().writeValue(configPath.toFile(), document);
-      status.setText(" Configuração salva em " + configPath + ". Clique em Carregar conexões para atualizar.");
-    } catch (Exception ex) { showError(ex); }
-  }
-
-  private static boolean indexForDefaultPort(String text) {
-    try {
-      int port = Integer.parseInt(text.strip());
-      for (SqlDatabaseType type : SqlDatabaseType.values()) if (type.defaultPort() == port) return true;
-    } catch (NumberFormatException ignored) {}
-    return false;
+    ConnectionManagerDialog.show(frame, configPath, CONNECTIONS, Main::loadConfiguration);
   }
 
   private static synchronized void configure(Path path) throws Exception {
-    federation = CONNECTIONS.configure(path);
+    federation = CONNECTIONS.configureLazy(path);
     TABLE_CACHE.clear();
     COLUMN_CACHE.clear();
   }

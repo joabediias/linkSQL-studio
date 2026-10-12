@@ -64,7 +64,7 @@ try {
     # Mantemos somente as classes que fazem parte do engine, sem Main.java / Swing do editor.
     $classes = @(
         'FederatedCountSupport', 'FederatedQuerySupport', 'FirebirdCompatDialect',
-        'GatewaySqlGuard', 'JdbcConnectionProfile', 'LinkSqlEmbeddedEngine',
+        'GatewaySqlGuard', 'JdbcConnectionProfile', 'ConnectionVault', 'LinkSqlEmbeddedEngine',
         'NativeJdbcPaging', 'NativeQueryCount', 'NativeServerPaging', 'NativeSqlRouter',
         'SingleServerSqlRouter', 'SqlConnectionRegistry', 'SqlDatabaseType',
         'SqlPageTotals', 'SqlQueryPlanner', 'SqlResultModels'

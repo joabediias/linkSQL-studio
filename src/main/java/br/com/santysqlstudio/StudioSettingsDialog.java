@@ -57,7 +57,7 @@ final class StudioSettingsDialog {
     panel.setPreferredSize(new Dimension(650, 440));
     Object[] buttons = {"Salvar", "Restaurar padrões", "Cancelar"};
     while (true) {
-      int action = JOptionPane.showOptionDialog(owner, panel, "Configurações — LinkSQL 2.7.1",
+      int action = JOptionPane.showOptionDialog(owner, panel, "Configurações — LinkSQL 2.8.1",
           JOptionPane.DEFAULT_OPTION, JOptionPane.PLAIN_MESSAGE, null, buttons, buttons[0]);
       if (action < 0 || action == 2) return null;
       if (action == 1) {

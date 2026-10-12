@@ -14,6 +14,7 @@ br\com\santysqlstudio\Main$24.class
 br\com\santysqlstudio\Main$CompletionPopup$3.class
 br\com\santysqlstudio\StudioSettings$Snapshot.class
 br\com\santysqlstudio\FederatedQuerySupport$Analysis.class
+br\com\santysqlstudio\ConnectionVault$Duration.class
 br\com\santysqlstudio\SqlEditorShortcutSupport$1.class
 br\com\santysqlstudio\Main$22.class
 br\com\santysqlstudio\NativeJdbcPaging$1.class
@@ -21,6 +22,7 @@ br\com\santysqlstudio\FederatedCountSupport.class
 br\com\santysqlstudio\SqlCompletionContext.class
 br\com\santysqlstudio\NativeServerPaging$1.class
 br\com\santysqlstudio\StudioSettingsDialog.class
+br\com\santysqlstudio\ConnectionManagerDialog$3.class
 br\com\santysqlstudio\FederatedQuerySupport.class
 br\com\santysqlstudio\SqlDatabaseType$1.class
 br\com\santysqlstudio\GatewayPgWireServer$Column.class
@@ -46,9 +48,10 @@ br\com\santysqlstudio\SqlEditorShortcutSupport.class
 br\com\santysqlstudio\NativeSqlRouter$Span.class
 br\com\santysqlstudio\Main$6.class
 br\com\santysqlstudio\StudioLog$1.class
+br\com\santysqlstudio\ConnectionVault.class
 br\com\santysqlstudio\Main$20.class
+br\com\santysqlstudio\ConnectionManagerDialog.class
 br\com\santysqlstudio\GatewayPgWireServer.class
-br\com\santysqlstudio\Main$33.class
 br\com\santysqlstudio\NativeSqlRouter$Token.class
 br\com\santysqlstudio\SqlDatabaseType.class
 br\com\santysqlstudio\SqlCompletionContext$Analysis.class
@@ -84,6 +87,7 @@ br\com\santysqlstudio\SqlHistoryStore.class
 br\com\santysqlstudio\Main$3.class
 br\com\santysqlstudio\SqlQueryPlanner$DirectSql.class
 br\com\santysqlstudio\TableMetadataDialog$ColumnInfo.class
+br\com\santysqlstudio\ConnectionManagerDialog$1.class
 br\com\santysqlstudio\Main$ScriptResult.class
 br\com\santysqlstudio\LinkSqlEmbeddedEngine.class
 br\com\santysqlstudio\NativeSqlRouter$Route.class
@@ -94,6 +98,7 @@ br\com\santysqlstudio\Main$19.class
 br\com\santysqlstudio\Main$29.class
 br\com\santysqlstudio\TableMetadataDialog$1.class
 br\com\santysqlstudio\Main$2.class
+br\com\santysqlstudio\ConnectionManagerDialog$2.class
 br\com\santysqlstudio\CsvExportWriter.class
 br\com\santysqlstudio\FederatedQuerySupport$Token.class
 br\com\santysqlstudio\NativeJdbcPaging$Window.class

@@ -27,15 +27,15 @@ final class SqlConnectionRegistry {
   private static final ObjectMapper JSON = new ObjectMapper();
   private final Map<String, BasicDataSource> sources = new LinkedHashMap<>();
   private final Map<String, JdbcConnectionProfile> profiles = new LinkedHashMap<>();
-  private final java.util.function.Function<String, String> passwordResolver;
+  private final java.util.function.Function<JdbcConnectionProfile, String> passwordResolver;
   private Connection federation;
   // Somente para o driver JDBC embutido: nao solicita senhas nem abre
   // origens nao utilizadas antes que a consulta indique seus aliases.
   private boolean lazyConnections;
-  private final Map<String, String> deferredPasswordCache = new LinkedHashMap<>();
+  private final Map<String, String> deferredPasswordCache = new java.util.concurrent.ConcurrentHashMap<>();
 
   SqlConnectionRegistry() { this(null); }
-  SqlConnectionRegistry(java.util.function.Function<String, String> passwordResolver) {
+  SqlConnectionRegistry(java.util.function.Function<JdbcConnectionProfile, String> passwordResolver) {
     this.passwordResolver = passwordResolver;
   }
 
@@ -54,17 +54,18 @@ final class SqlConnectionRegistry {
 
   /** Nao mantem a senha em arquivo; no EXE ela pode ser solicitada uma vez por recarga. */
   private String resolvePassword(JdbcConnectionProfile profile, Map<String, String> cache) {
-    String key = profile.passwordEnv();
-    String password = System.getenv(key);
+    String key = profile.name().toUpperCase(Locale.ROOT);
+    String password = ConnectionVault.get(profile.name());
+    if (password == null || password.isEmpty()) password = System.getenv(profile.passwordEnv());
     if (password == null || password.isEmpty()) {
       password = cache.get(key);
       if (password == null && passwordResolver != null) {
-        password = passwordResolver.apply(key);
+        password = passwordResolver.apply(profile);
         if (password != null && !password.isEmpty()) cache.put(key, password);
       }
     }
     if (password == null || password.isEmpty())
-      throw new IllegalArgumentException("Senha nao informada para " + profile.name() + ". Configure " + key + ".");
+      throw new IllegalArgumentException("Senha nao informada para " + profile.name() + ". Cadastre uma senha protegida ou configure " + profile.passwordEnv() + ".");
     return password;
   }
 
@@ -85,26 +86,36 @@ final class SqlConnectionRegistry {
   }
 
   /** Abre apenas o pool da origem solicitada pelo SQL no modo embutido. */
-  synchronized BasicDataSource source(String alias) throws SQLException {
-    JdbcConnectionProfile profile = null;
-    for (JdbcConnectionProfile candidate : profiles.values()) {
-      if (candidate.name().equalsIgnoreCase(alias)) {
-        profile = candidate;
-        break;
+  BasicDataSource source(String alias) throws SQLException {
+    // NUNCA manter o monitor do registro ao solicitar senha na interface.
+    // O dialogo usa o EDT; durante a abertura do JTree o EDT tambem acessa
+    // os perfis, causando deadlock se a thread JDBC retiver esse monitor.
+    JdbcConnectionProfile profile;
+    synchronized (this) {
+      profile = null;
+      for (JdbcConnectionProfile candidate : profiles.values()) {
+        if (candidate.name().equalsIgnoreCase(alias)) { profile = candidate; break; }
       }
+      if (profile == null) throw new SQLException("Conexao nao cadastrada: " + alias, "08001");
+      BasicDataSource existing = sources.get(profile.name());
+      if (existing != null) return existing;
+      if (!lazyConnections) throw new SQLException("Conexao nao carregada: " + alias, "08001");
     }
-    if (profile == null) throw new SQLException("Conexao nao cadastrada: " + alias, "08001");
-    BasicDataSource existing = sources.get(profile.name());
-    if (existing != null) return existing;
-    if (!lazyConnections) throw new SQLException("Conexao nao carregada: " + alias, "08001");
-    try {
-      String password = resolvePassword(profile, deferredPasswordCache);
-      BasicDataSource ds = makeDataSource(profile, password);
+    // Resolucao DPAPI / senha acontece SEM segurar o lock do registry.
+    String pass;
+    try { pass = resolvePassword(profile, deferredPasswordCache); }
+    catch (RuntimeException ex) {
+      throw new SQLException("Falha ao preparar conexao " + profile.name() + ": " + ex.getMessage(), "08001", ex);
+    }
+    synchronized (this) {
+      JdbcConnectionProfile current = profiles.get(profile.name());
+      if (current == null || !current.equals(profile) || !lazyConnections)
+        throw new SQLException("Conexoes foram alteradas durante a autenticacao. Tente novamente.", "08001");
+      BasicDataSource existing = sources.get(profile.name());
+      if (existing != null) return existing;
+      BasicDataSource ds = makeDataSource(profile, pass);
       sources.put(profile.name(), ds);
       return ds;
-    } catch (RuntimeException ex) {
-      throw new SQLException("Falha ao preparar conexao " + profile.name() + ": "
-          + ex.getMessage(), "08001", ex);
     }
   }
 
@@ -133,12 +144,11 @@ final class SqlConnectionRegistry {
     Connection connection = DriverManager.getConnection("jdbc:calcite:caseSensitive=false");
     try {
       SchemaPlus schemas = connection.unwrap(CalciteConnection.class).getRootSchema();
-      synchronized (this) {
-        for (JdbcConnectionProfile profile : profiles.values()) {
-          if (!needed.contains(profile.name().toUpperCase(Locale.ROOT))) continue;
-          BasicDataSource ds = lazyConnections ? source(profile.name()) : sources.get(profile.name());
-          if (ds != null) addCalciteSchema(schemas, profile, ds);
-        }
+      // Carrega uma origem por vez, sem travar o monitor durante o pedido de senha.
+      for (JdbcConnectionProfile profile : profilesSnapshot) {
+        if (!needed.contains(profile.name().toUpperCase(Locale.ROOT))) continue;
+        BasicDataSource ds = lazyConnections ? source(profile.name()) : sources.get(profile.name());
+        if (ds != null) addCalciteSchema(schemas, profile, ds);
       }
       return connection;
     } catch (Exception ex) {

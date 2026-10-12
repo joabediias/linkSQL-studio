@@ -1,13 +1,28 @@
-# SantySQL Studio 0.4 (Java 17)
+# LinkSQL 2.7.1 — Editor SQL multibanco
 
-Aplicativo experimental de consultas federadas MySQL usando Apache Calcite. Mantém limite de 1.000 linhas exibidas;
+O **LinkSQL** oferece um editor Java/Swing para consultas nativas e federadas entre MySQL, Oracle, PostgreSQL, SQL Server e Firebird.
 
-## Executar no PowerShell
+## Execução no desenvolvimento
+
+Requisitos: JDK 17+, Maven 3.9+.
 
 ```powershell
-cd C:\caminho\santySQL-studio
-$env:SQLBRIDGE_MYSQL_PASSWORD = Read-Host "Senha do MySQL"
 mvn clean compile exec:java
 ```
 
-O arquivo `config/connections.example.json` contém as conexões. `passwordEnv` deve conter o **nome da variável de ambiente**, nunca a senha.
+## Instalação Windows
+
+```powershell
+.\distribuicao\GERAR-WINDOWS.bat
+```
+
+O gerador passa a produzir `LinkSQL.exe` e `LinkSQL-portatil.zip`.
+
+**Compatibilidade:** nomes internos de classes e a pasta
+`%USERPROFILE%\.LinkSQL` foram mantidos deliberadamente nesta versão:
+isso preserva o histórico, as sessões, as preferências e as conexões existentes.
+
+## JDBC integrado ao processador SantySQL 5.3.7
+
+A POC utiliza a URL `jdbc:linksql:embedded`, sem processo Gateway separado.
+O driver compilado e as dependências são distribuídos em um ZIP separado.

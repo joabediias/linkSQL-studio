@@ -2,12 +2,17 @@ E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\CsvExportWriter.
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\FederatedCountSupport.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\FederatedQuerySupport.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\FirebirdCompatDialect.java
+E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\GatewayPgWireServer.java
+E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\GatewaySqlExecutor.java
+E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\GatewaySqlGuard.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\JdbcConnectionProfile.java
+E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\LinkSqlEmbeddedEngine.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\Main.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\NativeJdbcPaging.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\NativeQueryCount.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\NativeServerPaging.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\NativeSqlRouter.java
+E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SantySqlGateway.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SingleServerSqlRouter.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlCompletionContext.java
 E:\Projetos\santySQL-studio\src\main\java\br\com\santysqlstudio\SqlConnectionRegistry.java

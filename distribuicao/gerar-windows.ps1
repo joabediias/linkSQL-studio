@@ -147,14 +147,14 @@ try {
         if ($candidatos.Count -ne 1) { throw 'Nao consegui identificar o JAR principal. Confira target e pom.xml.' }
         $jarPrincipal = $candidatos[0].FullName
     }
-    $nomeJarDistribuicao = 'SantySQL-Studio.jar'
+    $nomeJarDistribuicao = 'LinkSQL.jar'
     $jarDistribuicao = Join-Path $entrada $nomeJarDistribuicao
     Copy-Item -LiteralPath $jarPrincipal -Destination $jarDistribuicao
 
     # JAR fino: as bibliotecas continuam separadas, evitando conflitos de
     # META-INF/services do Apache Calcite, MySQL Connector e outras bibliotecas.
     $classpath = ($dependencias | ForEach-Object { 'lib/' + $_.Name }) -join ' '
-    $manifesto = Join-Path $pastaTarget 'manifest-santysql.mf'
+    $manifesto = Join-Path $pastaTarget 'manifest-linksql.mf'
 
     # O formato MANIFEST.MF limita cada linha fisica a 72 bytes.
     # O Class-Path das dependencias pode ultrapassar esse limite. Dobramos
@@ -178,7 +178,7 @@ try {
 
     # Nao incluir nenhum JSON de conexoes no instalador (podem conter dados internos).
     @'
-SantySQL Studio 2.6.3
+LinkSQL 2.7.1
 - O arquivo de conexoes da versao instalada fica em:
   %USERPROFILE%\.santysql-studio\config\connections.json
 - Configure suas conexoes pelo menu Conexoes > Gerenciar conexoes.
@@ -188,24 +188,24 @@ SantySQL Studio 2.6.3
 '@ | Set-Content -LiteralPath (Join-Path $entrada 'LEIA-ME.txt') -Encoding UTF8
 
     $icones = @()
-    $icone = Join-Path $PSScriptRoot 'SantySQL-Studio.ico'
+    $icone = Join-Path $PSScriptRoot 'LinkSQL.ico'
     if (Test-Path $icone) { $icones = @('--icon', $icone) }
     # Modulos extras para JDBC, GUI e bibliotecas usadas pelo Calcite.
     $modulos = 'java.desktop,java.sql,java.naming,java.management,java.scripting,java.net.http,java.instrument,java.prefs,java.security.jgss,jdk.crypto.ec,jdk.unsupported'
-    $jpackageBase = @('--name', 'SantySQL-Studio', '--app-version', '2.6.3',
-        '--vendor', 'SantySQL Studio', '--input', $entrada,
+    $jpackageBase = @('--name', 'LinkSQL', '--app-version', '2.7.1',
+        '--vendor', 'LinkSQL', '--input', $entrada,
         '--main-jar', $nomeJarDistribuicao, '--main-class', 'br.com.santysqlstudio.Main',
         '--java-options', '-Dsantysql.packaged=true', '--add-modules', $modulos) + $icones
 
     Write-Host 'Criando aplicativo portatil (EXE com Java incluido)...' -ForegroundColor Yellow
     Executar $jpackage (@('--type', 'app-image', '--dest', $destino) + $jpackageBase)
-    $executavel = Join-Path $destino 'SantySQL-Studio\SantySQL-Studio.exe'
+    $executavel = Join-Path $destino 'LinkSQL\LinkSQL.exe'
     if (!(Test-Path $executavel)) { throw 'jpackage nao produziu o EXE portatil esperado.' }
     Write-Host "Portatil criado: $executavel" -ForegroundColor Green
 
     if (!$SemZip) {
-        $zipPortatil = Join-Path $destino 'SantySQL-Studio-2.6.3-portatil.zip'
-        Compress-Archive -Path (Join-Path $destino 'SantySQL-Studio') -DestinationPath $zipPortatil -CompressionLevel Optimal -Force
+        $zipPortatil = Join-Path $destino 'LinkSQL-2.7.1-portatil.zip'
+        Compress-Archive -Path (Join-Path $destino 'LinkSQL') -DestinationPath $zipPortatil -CompressionLevel Optimal -Force
         Write-Host "ZIP portatil: $zipPortatil" -ForegroundColor Green
     }
 

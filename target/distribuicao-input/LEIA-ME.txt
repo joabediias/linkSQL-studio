@@ -1,4 +1,4 @@
-﻿SantySQL Studio 2.6.3
+﻿LinkSQL 2.7.1
 - O arquivo de conexoes da versao instalada fica em:
   %USERPROFILE%\.santysql-studio\config\connections.json
 - Configure suas conexoes pelo menu Conexoes > Gerenciar conexoes.

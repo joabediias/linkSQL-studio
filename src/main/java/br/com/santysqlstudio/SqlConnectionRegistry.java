@@ -29,6 +29,10 @@ final class SqlConnectionRegistry {
   private final Map<String, JdbcConnectionProfile> profiles = new LinkedHashMap<>();
   private final java.util.function.Function<String, String> passwordResolver;
   private Connection federation;
+  // Somente para o driver JDBC embutido: nao solicita senhas nem abre
+  // origens nao utilizadas antes que a consulta indique seus aliases.
+  private boolean lazyConnections;
+  private final Map<String, String> deferredPasswordCache = new LinkedHashMap<>();
 
   SqlConnectionRegistry() { this(null); }
   SqlConnectionRegistry(java.util.function.Function<String, String> passwordResolver) {
@@ -80,6 +84,30 @@ final class SqlConnectionRegistry {
     return ds;
   }
 
+  /** Abre apenas o pool da origem solicitada pelo SQL no modo embutido. */
+  synchronized BasicDataSource source(String alias) throws SQLException {
+    JdbcConnectionProfile profile = null;
+    for (JdbcConnectionProfile candidate : profiles.values()) {
+      if (candidate.name().equalsIgnoreCase(alias)) {
+        profile = candidate;
+        break;
+      }
+    }
+    if (profile == null) throw new SQLException("Conexao nao cadastrada: " + alias, "08001");
+    BasicDataSource existing = sources.get(profile.name());
+    if (existing != null) return existing;
+    if (!lazyConnections) throw new SQLException("Conexao nao carregada: " + alias, "08001");
+    try {
+      String password = resolvePassword(profile, deferredPasswordCache);
+      BasicDataSource ds = makeDataSource(profile, password);
+      sources.put(profile.name(), ds);
+      return ds;
+    } catch (RuntimeException ex) {
+      throw new SQLException("Falha ao preparar conexao " + profile.name() + ": "
+          + ex.getMessage(), "08001", ex);
+    }
+  }
+
   /** Teste isolado nao altera conexoes carregadas ou configurações. */
   String test(JdbcConnectionProfile profile, String password) throws Exception {
     profile.validate();
@@ -99,14 +127,17 @@ final class SqlConnectionRegistry {
     // Uma consulta com fontes reconhecidas nao precisa registrar bancos nao usados.
     // Quando nao ha alias de fonte explicito, preservamos o comportamento legado.
     Set<String> needed = FederatedQuerySupport.sourcesToRegister(sql, profilesSnapshot);
+    // SELECT constante nao precisa tentar abrir todos os servidores.
+    if (lazyConnections && FederatedQuerySupport.analyze(sql, profilesSnapshot).sources().isEmpty())
+      needed = Set.of();
     Connection connection = DriverManager.getConnection("jdbc:calcite:caseSensitive=false");
     try {
       SchemaPlus schemas = connection.unwrap(CalciteConnection.class).getRootSchema();
       synchronized (this) {
-        for (Map.Entry<String, BasicDataSource> entry : sources.entrySet()) {
-          if (!needed.contains(entry.getKey().toUpperCase(Locale.ROOT))) continue;
-          JdbcConnectionProfile profile = profiles.get(entry.getKey());
-          addCalciteSchema(schemas, profile, entry.getValue());
+        for (JdbcConnectionProfile profile : profiles.values()) {
+          if (!needed.contains(profile.name().toUpperCase(Locale.ROOT))) continue;
+          BasicDataSource ds = lazyConnections ? source(profile.name()) : sources.get(profile.name());
+          if (ds != null) addCalciteSchema(schemas, profile, ds);
         }
       }
       return connection;
@@ -138,6 +169,15 @@ final class SqlConnectionRegistry {
 
   /** Atualiza as fontes de forma atomica; em erro preserva conexoes anteriores. */
   synchronized Connection configure(Path path) throws Exception {
+    return configureInternal(path, false);
+  }
+
+  /** Modo JDBC embutido: carrega metadados JSON, nao solicita senhas no connect(). */
+  synchronized Connection configureLazy(Path path) throws Exception {
+    return configureInternal(path, true);
+  }
+
+  private Connection configureInternal(Path path, boolean lazy) throws Exception {
     JsonNode root = JSON.readTree(Files.readString(path));
     Map<String, BasicDataSource> nextSources = new LinkedHashMap<>();
     Map<String, JdbcConnectionProfile> nextProfiles = new LinkedHashMap<>();
@@ -150,14 +190,18 @@ final class SqlConnectionRegistry {
         JdbcConnectionProfile profile = JdbcConnectionProfile.fromJson(item);
         if (!names.add(profile.name().toUpperCase(Locale.ROOT)))
           throw new IllegalArgumentException("Nome de conexao duplicado: " + profile.name());
-        BasicDataSource ds = makeDataSource(profile, resolvePassword(profile, passwordCache));
-        nextSources.put(profile.name(), ds);
         nextProfiles.put(profile.name(), profile);
-        addCalciteSchema(schemas, profile, ds);
+        if (!lazy) {
+          BasicDataSource ds = makeDataSource(profile, resolvePassword(profile, passwordCache));
+          nextSources.put(profile.name(), ds);
+          addCalciteSchema(schemas, profile, ds);
+        }
       }
       Connection previous = federation;
       Map<String, BasicDataSource> old = new LinkedHashMap<>(sources);
       federation = next;
+      lazyConnections = lazy;
+      deferredPasswordCache.clear();
       sources.clear(); sources.putAll(nextSources);
       profiles.clear(); profiles.putAll(nextProfiles);
       if (previous != null) try { previous.close(); } catch (SQLException ignored) {}
@@ -175,5 +219,7 @@ final class SqlConnectionRegistry {
     federation = null;
     for (BasicDataSource ds : sources.values()) try { ds.close(); } catch (SQLException ignored) {}
     sources.clear(); profiles.clear();
+    deferredPasswordCache.clear();
+    lazyConnections = false;
   }
 }

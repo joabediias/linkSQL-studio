@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.Driver;
+import java.sql.DriverManager;
 import java.sql.DriverPropertyInfo;
 import java.sql.SQLException;
 import java.util.Properties;
@@ -17,6 +18,16 @@ import java.util.logging.Logger;
  */
 public final class LinkSqlDriver implements Driver {
   private static final String PREFIX = "jdbc:linksql:embedded";
+
+  // Necessario para apps que descobrem drivers por ServiceLoader/DriverManager.
+  static {
+    try {
+      DriverManager.registerDriver(new LinkSqlDriver());
+    } catch (SQLException ex) {
+      throw new ExceptionInInitializerError(ex);
+    }
+  }
+
 
   @Override public Connection connect(String url, Properties properties) throws SQLException {
     if (!acceptsURL(url)) return null;
@@ -60,7 +71,7 @@ public final class LinkSqlDriver implements Driver {
     return new DriverPropertyInfo[] { config };
   }
   @Override public int getMajorVersion() { return 0; }
-  @Override public int getMinorVersion() { return 3; }
+  @Override public int getMinorVersion() { return 4; }
   @Override public boolean jdbcCompliant() { return false; }
   @Override public Logger getParentLogger() { return Logger.getLogger("br.com.linksql.jdbc"); }
 }

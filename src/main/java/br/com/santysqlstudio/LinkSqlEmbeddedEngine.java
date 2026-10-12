@@ -18,7 +18,7 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
 
   public LinkSqlEmbeddedEngine(Path connectionsFile) throws SQLException {
     registry = new SqlConnectionRegistry(LinkSqlEmbeddedEngine::resolvePassword);
-    try { metaConnection = registry.configure(connectionsFile); }
+    try { metaConnection = registry.configureLazy(connectionsFile); }
     catch (Exception ex) {
       registry.close();
       throw new SQLException("Nao foi possivel carregar as conexoes do LinkSQL: " + ex.getMessage(), "08001", ex);
@@ -63,9 +63,7 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
   }
 
   private Connection sourceConnection(String alias) throws SQLException {
-    org.apache.commons.dbcp2.BasicDataSource source = registry.sources().get(alias);
-    if (source == null) throw new SQLException("Conexao nao cadastrada: " + alias);
-    return source.getConnection();
+    return registry.source(alias).getConnection();
   }
 
   @Override public void close() { registry.close(); }

@@ -1,0 +1,6 @@
+﻿LinkSQL JDBC Bundle 0.5
+Arquivo: E:\Projetos\santySQL-studio\target\linksql-jdbc\linksql-jdbc-bundle-0.5.jar
+SHA256: faf2cc162ffcf483ea5e613ea492e278c32ad10a4de8a5769d7e57f902835b24
+Criado: 2026-10-12 11:18:14
+Drivers externos MySQL/Oracle/PostgreSQL/SQL Server/Firebird: nao inclusos
+Instale somente apos validar seus bancos no ambiente de teste.

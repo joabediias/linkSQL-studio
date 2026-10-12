@@ -11,6 +11,7 @@ import java.util.ServiceLoader;
 /** Teste simples que nao precisa de credenciais reais nem de servidores de banco. */
 public class VerificarLinkSqlJdbc {
     public static void main(String[] args) throws Exception {
+        Class.forName("br.com.santysqlstudio.ConnectionVault");
         boolean encontrou = false;
         for (Driver driver : ServiceLoader.load(Driver.class)) {
             if (driver.getClass().getName().equals("br.com.linksql.jdbc.LinkSqlDriver")) {

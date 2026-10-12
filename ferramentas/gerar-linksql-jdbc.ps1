@@ -90,6 +90,10 @@ try {
     }
     $engine = Get-Content -LiteralPath (Join-Path $destMotor 'LinkSqlEmbeddedEngine.java') -Raw -Encoding UTF8
     $registry = Get-Content -LiteralPath (Join-Path $destMotor 'SqlConnectionRegistry.java') -Raw -Encoding UTF8
+    $vault = Get-Content -LiteralPath (Join-Path $destMotor 'ConnectionVault.java') -Raw -Encoding UTF8
+    if ($registry -notmatch 'ConnectionVault.get' -or $vault -notmatch 'LINKSQL_DPAPI_V1') {
+        throw 'Fontes do cofre DPAPI desatualizados. Aplique a correcao JDBC 0.5 para o LinkSQL 2.8.2.'
+    }
     if ($engine -notmatch 'configureLazy' -or $registry -notmatch 'configureLazy') {
         throw 'Fontes JDBC sem configureLazy. Reextraia o pacote completo do gerador 0.4.2 na raiz do projeto LinkSQL, substituindo os dois fontes indicados no LEIA-ME.'
     }
@@ -107,6 +111,7 @@ try {
     foreach ($obrigatorio in @(
         'br/com/linksql/jdbc/LinkSqlDriver.class',
         'br/com/santysqlstudio/LinkSqlEmbeddedEngine.class',
+        'br/com/santysqlstudio/ConnectionVault.class',
         'org/apache/calcite/jdbc/CalciteConnection.class',
         'META-INF/services/java.sql.Driver'
     )) {

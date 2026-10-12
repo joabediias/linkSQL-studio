@@ -39,6 +39,7 @@ final class ConnectionVault {
       ".santysql-studio", "config", "credentials.dpapi.json");
   // -EncodedCommand (UTF-16LE) evita problemas de parsing/aspas em Windows.
   // Dados sensiveis entram apenas por stdin, nunca aparecem na linha de comando.
+  private static final String DPAPI_RESULT_PREFIX = "LINKSQL_DPAPI_V1:";
   private static final String DPAPI_SCRIPT =
       "$ErrorActionPreference='Stop';" +
       "try {" +
@@ -50,7 +51,7 @@ final class ConnectionVault {
       "$out=if ('__MODE__' -eq 'protect') {" +
       "[System.Security.Cryptography.ProtectedData]::Protect($raw,$null,$scope)" +
       "} else { [System.Security.Cryptography.ProtectedData]::Unprotect($raw,$null,$scope) };" +
-      "[Console]::Out.WriteLine([Convert]::ToBase64String($out));" +
+      "[Console]::Out.WriteLine('LINKSQL_DPAPI_V1:'+[Convert]::ToBase64String($out));" +
       "exit 0" +
       "} catch { [Console]::Error.WriteLine('DPAPI: ' + $_.Exception.Message); exit 2 }";
   private ConnectionVault() {}
@@ -170,21 +171,45 @@ final class ConnectionVault {
     } finally { Files.deleteIfExists(temporary); }
   }
 
+  /** Lê apenas linhas identificadas: avisos do PowerShell e CLIXML não são dados DPAPI. */
+  static byte[] parseDpapiResult(String stdout) throws IOException {
+    String encoded = null;
+    for (String line : stdout.split("\\R")) {
+      String trimmed = line.strip();
+      if (trimmed.startsWith(DPAPI_RESULT_PREFIX))
+        encoded = trimmed.substring(DPAPI_RESULT_PREFIX.length()).strip();
+    }
+    if (encoded == null || encoded.isEmpty())
+      throw new IOException("O PowerShell não retornou a resposta DPAPI identificada. " +
+          "Verifique a política de execução e o diagnóstico do Windows.");
+    try { return Base64.getDecoder().decode(encoded); }
+    catch (IllegalArgumentException ex) {
+      throw new IOException("Resposta DPAPI marcada, mas com Base64 inválido.", ex);
+    }
+  }
+
+  private static Thread readStream(InputStream stream, ByteArrayOutputStream buffer, String label) {
+    Thread reader = new Thread(() -> {
+      try (InputStream in = stream) { in.transferTo(buffer); }
+      catch (IOException ignored) { /* processo encerrado */ }
+    }, label);
+    reader.setDaemon(true);
+    reader.start();
+    return reader;
+  }
+
   private static byte[] dpapi(boolean encrypt, byte[] input) throws IOException {
     if (!windows()) throw new IOException("DPAPI disponível somente no Windows.");
     String command = DPAPI_SCRIPT.replace("__MODE__", encrypt ? "protect" : "unprotect");
     String encodedCommand = Base64.getEncoder().encodeToString(command.getBytes(StandardCharsets.UTF_16LE));
+    // Nunca misturar stdout (somente resultado marcado) com stderr do PowerShell
+    // (avisos e mensagens #< CLIXML). Isso evita decodificar '#' como Base64.
     Process process = new ProcessBuilder("powershell.exe", "-NoLogo", "-NoProfile",
-        "-NonInteractive", "-EncodedCommand", encodedCommand).redirectErrorStream(true).start();
-    // O output é curto; lemos em outra thread antes do waitFor para evitar
-    // deadlock caso PowerShell escreva mais que o buffer de stdout.
-    ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-    Thread reader = new Thread(() -> {
-      try (InputStream in = process.getInputStream()) { in.transferTo(buffer); }
-      catch (IOException ignored) {}
-    }, "linksql-dpapi-output");
-    reader.setDaemon(true);
-    reader.start();
+        "-NonInteractive", "-EncodedCommand", encodedCommand).start();
+    ByteArrayOutputStream stdoutBuffer = new ByteArrayOutputStream();
+    ByteArrayOutputStream stderrBuffer = new ByteArrayOutputStream();
+    Thread stdoutReader = readStream(process.getInputStream(), stdoutBuffer, "linksql-dpapi-stdout");
+    Thread stderrReader = readStream(process.getErrorStream(), stderrBuffer, "linksql-dpapi-stderr");
     try (OutputStreamWriter writer = new OutputStreamWriter(process.getOutputStream(), StandardCharsets.US_ASCII)) {
       writer.write(Base64.getEncoder().encodeToString(input));
       writer.write("\n");
@@ -199,16 +224,15 @@ final class ConnectionVault {
       process.destroyForcibly();
       throw new IOException("A proteção DPAPI excedeu 15 segundos. Verifique o perfil e a sessão do Windows.");
     }
-    try { reader.join(1500); }
+    try { stdoutReader.join(2000); stderrReader.join(2000); }
     catch (InterruptedException ex) { Thread.currentThread().interrupt(); }
-    String output = buffer.toString(StandardCharsets.UTF_8).strip();
     if (process.exitValue() != 0) {
-      // Nunca incluir entrada cifrada nem texto puro nos detalhes de erro.
-      String details = output.length() > 400 ? output.substring(0, 400) : output;
+      String stderr = stderrBuffer.toString(StandardCharsets.UTF_8).strip();
+      // Não imprimir conteúdo de stdout: ele pode conter material protegido.
+      String details = stderr.length() > 450 ? stderr.substring(0, 450) : stderr;
       throw new IOException("Falha no Windows DPAPI (código " + process.exitValue() + "): " +
-          (details.isBlank() ? "sem detalhes; confira permissões da sessão Windows." : details));
+          (details.isBlank() ? "sem detalhes; consulte o diagnóstico DPAPI." : details));
     }
-    try { return Base64.getDecoder().decode(output); }
-    catch (IllegalArgumentException ex) { throw new IOException("Resposta inválida da proteção DPAPI.", ex); }
+    return parseDpapiResult(stdoutBuffer.toString(StandardCharsets.UTF_8));
   }
 }

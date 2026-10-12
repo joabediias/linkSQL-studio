@@ -470,7 +470,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("LinkSQL - 3.1.0");
+    frame = new JFrame("LinkSQL - 3.1.1");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -714,6 +714,7 @@ public class Main {
     searchColumns.addActionListener(e -> searchColumnsAcrossTables());
 
     tabs = new JTabbedPane();
+    installSqlTabContextMenu();
     restoringSession = true;
     restoreSession();
     if (tabs.getTabCount() == 0) addSqlTab();
@@ -807,7 +808,7 @@ public class Main {
     status = new JLabel(" Carregue as conexões para iniciar. | " + formatPageSize(preferredPageSize) + " linhas por página");
     status.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
     JPanel top = new JPanel(new BorderLayout());
-    JLabel brand = new JLabel("  ◈  LinkSQL   /   SQL federado   ·   v3.1.0");
+    JLabel brand = new JLabel("  ◈  LinkSQL   /   SQL federado   ·   v3.1.1");
     brand.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 15));
     brand.setBorder(BorderFactory.createEmptyBorder(12, 10, 8, 10));
     top.add(brand, BorderLayout.NORTH);
@@ -857,18 +858,10 @@ public class Main {
     area.getActionMap().put("runScript", new AbstractAction() { public void actionPerformed(ActionEvent e) { runScript(); } });
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_SPACE, InputEvent.CTRL_DOWN_MASK), "sqlComplete");
     area.getActionMap().put("sqlComplete", new AbstractAction() { public void actionPerformed(ActionEvent e) { showCompletions(area); } });
-    // Exibe sugestoes ao digitar ponto apos alias de tabela, CTE ou nome do servidor.
+    // O RSyntaxTextArea insere o ponto usando sua acao padrao de digitacao.
+    // O autocomplete e disparado pelo DocumentListener *apos* a insercao,
+    // evitando digitar duas vezes por conflito KEY_PRESSED/KEY_TYPED.
     // Ctrl+Espaco continua disponivel para disparo manual.
-    area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_PERIOD, 0), "sqlDotComplete");
-    area.getActionMap().put("sqlDotComplete", new AbstractAction() {
-      public void actionPerformed(ActionEvent e) {
-        area.replaceSelection(".");
-        SwingUtilities.invokeLater(() -> {
-          if (automaticCompletion && area.isShowing() && area.getSelectedText() == null)
-            showCompletions(area);
-        });
-      }
-    });
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK), "saveSql");
     area.getActionMap().put("saveSql", new AbstractAction() { public void actionPerformed(ActionEvent e) { saveSqlFile(false); } });
     area.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_F, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK), "formatSql");
@@ -901,16 +894,35 @@ public class Main {
     completionDelay.setRepeats(false);
     area.putClientProperty("automaticCompletionTimer", completionDelay);
     area.getDocument().addDocumentListener(new DocumentListener() {
-      private void changed() {
+      private void changed(boolean dotInserted) {
         closeCompletion(area);
         updateDirtyTitle(scroll);
         scheduleSessionSave();
-        if (automaticCompletion && area.isShowing() && area.isFocusOwner()) completionDelay.restart();
-        else completionDelay.stop();
+        if (automaticCompletion && area.isShowing() && area.isFocusOwner()) {
+          if (dotInserted && area.getSelectedText() == null) {
+            completionDelay.stop();
+            // Confere a posicao atual; eventos de edicao podem ser enfileirados.
+            int caret = area.getCaretPosition();
+            if (caret > 0 && area.getText().charAt(caret - 1) == '.') {
+              showCompletions(area);
+              return;
+            }
+          }
+          completionDelay.restart();
+        } else completionDelay.stop();
       }
-      public void insertUpdate(DocumentEvent e) { SwingUtilities.invokeLater(this::changed); }
-      public void removeUpdate(DocumentEvent e) { SwingUtilities.invokeLater(this::changed); }
-      public void changedUpdate(DocumentEvent e) { SwingUtilities.invokeLater(this::changed); }
+      public void insertUpdate(DocumentEvent e) {
+        // Captura o caractere antes de sair da notificacao do documento.
+        boolean dotInserted = false;
+        if (e.getLength() == 1) {
+          try { dotInserted = ".".equals(e.getDocument().getText(e.getOffset(), 1)); }
+          catch (javax.swing.text.BadLocationException ignored) {}
+        }
+        final boolean dot = dotInserted;
+        SwingUtilities.invokeLater(() -> changed(dot));
+      }
+      public void removeUpdate(DocumentEvent e) { SwingUtilities.invokeLater(() -> changed(false)); }
+      public void changedUpdate(DocumentEvent e) { SwingUtilities.invokeLater(() -> changed(false)); }
     });
     tabs.setSelectedIndex(tabs.getTabCount() - 1);
     scheduleSessionSave();
@@ -1104,6 +1116,61 @@ public class Main {
     String name = OPEN_FILES.containsKey(tab) ? OPEN_FILES.get(tab).getFileName().toString()
         : tabs.getTitleAt(index).replaceFirst("^\\* ", "");
     tabs.setTitleAt(index, (dirty ? "* " : "") + name);
+  }
+
+  /** Menu no titulo da aba (pressionar/soltar: compativel com Windows e Linux). */
+  private static void installSqlTabContextMenu() {
+    tabs.addMouseListener(new MouseAdapter() {
+      private void popup(MouseEvent e) {
+        if (!e.isPopupTrigger()) return;
+        int index = tabs.indexAtLocation(e.getX(), e.getY());
+        if (index < 0) return; // Clique fora dos titulos nao abre o menu.
+        Component target = tabs.getComponentAt(index);
+        tabs.setSelectedIndex(index);
+        sqlTabContextMenu(target).show(tabs, e.getX(), e.getY());
+      }
+      @Override public void mousePressed(MouseEvent e) { popup(e); }
+      @Override public void mouseReleased(MouseEvent e) { popup(e); }
+    });
+  }
+
+  /** Fechamento multiplos sempre passa pela verificacao de alteracoes nao salvas. */
+  private static void closeSqlTabsAround(Component anchor, boolean onlyRight) {
+    int anchorIndex = tabs.indexOfComponent(anchor);
+    if (anchorIndex < 0) return;
+    List<Component> candidates = new ArrayList<>();
+    for (int i = tabs.getTabCount() - 1; i >= 0; i--) {
+      if (i == anchorIndex || onlyRight && i < anchorIndex) continue;
+      candidates.add(tabs.getComponentAt(i));
+    }
+    for (Component candidate : candidates) {
+      int index = tabs.indexOfComponent(candidate);
+      if (index >= 0 && !closeSqlTab(index, false)) break;
+    }
+    if (tabs.indexOfComponent(anchor) >= 0) tabs.setSelectedComponent(anchor);
+    scheduleSessionSave();
+  }
+
+  private static JPopupMenu sqlTabContextMenu(Component target) {
+    JPopupMenu menu = new JPopupMenu();
+    JMenuItem close = new JMenuItem("Fechar aba");
+    close.addActionListener(e -> {
+      int index = tabs.indexOfComponent(target);
+      if (index >= 0) closeSqlTab(index);
+    });
+    menu.add(close);
+
+    JMenuItem closeOthers = new JMenuItem("Fechar outras abas");
+    closeOthers.setEnabled(tabs.getTabCount() > 1);
+    closeOthers.addActionListener(e -> closeSqlTabsAround(target, false));
+    menu.add(closeOthers);
+
+    JMenuItem closeRight = new JMenuItem("Fechar abas à direita");
+    int index = tabs.indexOfComponent(target);
+    closeRight.setEnabled(index >= 0 && index < tabs.getTabCount() - 1);
+    closeRight.addActionListener(e -> closeSqlTabsAround(target, true));
+    menu.add(closeRight);
+    return menu;
   }
 
   private static boolean closeSqlTab(int index) { return closeSqlTab(index, true); }

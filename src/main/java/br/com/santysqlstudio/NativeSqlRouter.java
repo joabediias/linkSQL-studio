@@ -25,17 +25,7 @@ final class NativeSqlRouter {
   static Route route(String sql, Collection<JdbcConnectionProfile> profiles) {
     if (sql == null || sql.isBlank() || profiles == null || profiles.isEmpty()) return null;
     List<Token> tokens = lex(sql);
-    if (tokens == null || tokens.isEmpty()) return null;
-    if (!tokens.get(0).word("SELECT") && !tokens.get(0).word("WITH")) return null;
-    // SQL apenas de leitura: WITH pode conter DML em CTEs no PostgreSQL.
-    for (int i = 0; i < tokens.size(); i++) {
-      Token t = tokens.get(i);
-      if (t.word("INSERT") || t.word("UPDATE") || t.word("DELETE") || t.word("MERGE")
-          || t.word("CREATE") || t.word("ALTER") || t.word("DROP") || t.word("TRUNCATE")
-          || t.word("EXEC") || t.word("EXECUTE") || t.word("CALL") || t.word("GRANT")
-          || t.word("REVOKE") || t.word("COPY") || t.word("INTO") || t.word("LOCK")) return null;
-      if (t.value.equals(";")) return null;
-    }
+    if (!readOnlyTokens(tokens)) return null;
 
     JdbcConnectionProfile chosen = null;
     List<Span> removals = new ArrayList<>();
@@ -64,6 +54,25 @@ final class NativeSqlRouter {
     removals.sort(Comparator.comparingInt(Span::start).reversed());
     for (Span r : removals) nativeSql.delete(r.start, r.end);
     return new Route(chosen.name(), chosen.type(), nativeSql.toString());
+  }
+
+  /** Valida a natureza somente-leitura antes do roteamento nativo da aba. */
+  static boolean readOnlyQuery(String sql) {
+    return sql != null && readOnlyTokens(lex(sql));
+  }
+
+  private static boolean readOnlyTokens(List<Token> tokens) {
+    if (tokens == null || tokens.isEmpty()) return false;
+    if (!tokens.get(0).word("SELECT") && !tokens.get(0).word("WITH")) return false;
+    // WITH com CTE de escrita (PostgreSQL) nao deve ser encaminhado sem revisao.
+    for (Token t : tokens) {
+      if (t.word("INSERT") || t.word("UPDATE") || t.word("DELETE") || t.word("MERGE")
+          || t.word("CREATE") || t.word("ALTER") || t.word("DROP") || t.word("TRUNCATE")
+          || t.word("EXEC") || t.word("EXECUTE") || t.word("CALL") || t.word("GRANT")
+          || t.word("REVOKE") || t.word("COPY") || t.word("INTO") || t.word("LOCK")
+          || t.value.equals(";")) return false;
+    }
+    return true;
   }
 
   /** Lexer conservador: comentarios e literais nunca sao reescritos. */

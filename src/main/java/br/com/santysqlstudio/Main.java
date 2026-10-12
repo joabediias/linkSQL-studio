@@ -162,20 +162,20 @@ public class Main {
     return size instanceof Integer n ? n : preferredPageSize;
   }
   private static String formatPageSize(int size) { return StudioSettings.formatPageSize(size); }
-  private static String firstPageSql(String sql, int size) {
+  private static String firstPageSql(String sql, int size, String tabAlias) {
     // JDBC portavel: o limite/paginacao das conexoes nao-MySQL e aplicado
     // sobre o ResultSet. Nunca injetar LIMIT de MySQL no SQL de outro banco.
-    NativeSqlRouter.Route nativeRoute = nativeRoute(sql);
+    NativeSqlRouter.Route nativeRoute = nativeRoute(sql, tabAlias);
     if (nativeRoute != null) return nativeRoute.sql();
     DirectSql direct = directSql(sql);
     if (direct == null) return sql;
     return directPageSql(direct, sqlWindow(sql), 0, size);
   }
-  private static NativeSqlRouter.Route nativeRoute(String sql) {
-    return NativeSqlRouter.route(sqlWindow(sql).baseSql(), CONNECTIONS.allProfiles());
+  private static NativeSqlRouter.Route nativeRoute(String sql, String tabAlias) {
+    return SqlTabRouting.route(sql, tabAlias, CONNECTIONS.allProfiles());
   }
-  private static String executionLabel(String sql) {
-    NativeSqlRouter.Route route = nativeRoute(sql);
+  private static String executionLabel(String sql, String tabAlias) {
+    NativeSqlRouter.Route route = nativeRoute(sql, tabAlias);
     if (route != null) return route.type() + " nativo (" + route.source() + ")";
     return directSql(sql) == null
         ? FederatedQuerySupport.executionLabel(sql, CONNECTIONS.allProfiles()) : "MySQL direto";
@@ -193,8 +193,8 @@ public class Main {
       stmt.setFetchSize(Integer.MIN_VALUE);
     }
   }
-  private static Connection queryConnectionFor(String sql) throws SQLException {
-    NativeSqlRouter.Route nativeRoute = nativeRoute(sql);
+  private static Connection queryConnectionFor(String sql, String tabAlias) throws SQLException {
+    NativeSqlRouter.Route nativeRoute = nativeRoute(sql, tabAlias);
     if (nativeRoute != null) return CONNECTIONS.source(nativeRoute.source()).getConnection();
     DirectSql direct = directSql(sql);
     return direct == null ? openQueryConnection(sql) : CONNECTIONS.source(direct.source()).getConnection();
@@ -215,6 +215,7 @@ public class Main {
     return cache;
   }
   private static void requestCount(JScrollPane scroll, String sql) {
+    String tabAlias = (String) scroll.getClientProperty("sqlDefaultSource");
     // Cada resultado usa um ticket: uma resposta antiga nao modifica uma nova consulta.
     final Object ticket = new Object();
     scroll.putClientProperty("countTicket", ticket);
@@ -225,7 +226,7 @@ public class Main {
       return;
     }
     DirectSql direct = directSql(sql);
-    NativeSqlRouter.Route nativeCount = direct == null ? nativeRoute(sql) : null;
+    NativeSqlRouter.Route nativeCount = direct == null ? nativeRoute(sql, tabAlias) : null;
     boolean federated = direct == null && nativeCount == null;
     // Contagem federada sempre ativa, sem depender de preferencia antiga do usuario.
     boolean allowed = isPageableSql(sql);
@@ -325,6 +326,43 @@ public class Main {
   private static final Map<Component, Path> OPEN_FILES = new IdentityHashMap<>();
   private static JTextField tableSearch;
   private static final Map<Component, String> SAVED_TEXT = new IdentityHashMap<>();
+  private static final Map<Component, String> TAB_SOURCES = new IdentityHashMap<>();
+  private static JComboBox<TabSourceChoice> tabSourceBox;
+  private static boolean updatingTabSourceBox;
+  private record TabSourceChoice(String alias, String label) {
+    @Override public String toString() { return label; }
+  }
+  private static String tabSource(Component tab) {
+    return tab == null ? "" : TAB_SOURCES.getOrDefault(tab, "");
+  }
+  private static void updateTabSourceChoice() {
+    if (tabSourceBox == null || tabs == null) return;
+    String current = tabSource(tabs.getSelectedComponent());
+    updatingTabSourceBox = true;
+    try {
+      tabSourceBox.removeAllItems();
+      tabSourceBox.addItem(new TabSourceChoice("", "Federado (SRV_...)"));
+      for (JdbcConnectionProfile p : CONNECTIONS.allProfiles())
+        tabSourceBox.addItem(new TabSourceChoice(p.name(),
+            p.name() + " [" + p.type() + "]"));
+      boolean found = current.isBlank();
+      for (int i = 0; i < tabSourceBox.getItemCount(); i++) {
+        TabSourceChoice choice = tabSourceBox.getItemAt(i);
+        if (choice.alias().equalsIgnoreCase(current)) {
+          tabSourceBox.setSelectedIndex(i);
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        tabSourceBox.addItem(new TabSourceChoice(current,
+            current + " (conexão não cadastrada)"));
+        tabSourceBox.setSelectedIndex(tabSourceBox.getItemCount() - 1);
+      }
+    } finally {
+      updatingTabSourceBox = false;
+    }
+  }
   private static final Path SESSION_FILE = Paths.get(System.getProperty("user.home"), ".santysql-studio", "sql-session.json");
   private static boolean restoringSession = false;
   private static boolean shuttingDown = false;
@@ -432,7 +470,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("LinkSQL - 3.0.0");
+    frame = new JFrame("LinkSQL - 3.1.0");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -682,7 +720,21 @@ public class Main {
     restoringSession = false;
     sessionTimer = new javax.swing.Timer(1500, e -> saveSession());
     sessionTimer.setRepeats(false);
-    tabs.addChangeListener(e -> scheduleSessionSave());
+    tabs.addChangeListener(e -> {
+      scheduleSessionSave();
+      updateTabSourceChoice();
+    });
+    tabSourceBox = new JComboBox<>();
+    tabSourceBox.setPreferredSize(new Dimension(270, 28));
+    tabSourceBox.setToolTipText("Origem padrão desta aba: sem prefixo SRV_..., usa o banco selecionado.");
+    tabSourceBox.addActionListener(e -> {
+      if (updatingTabSourceBox || tabs.getSelectedComponent() == null) return;
+      TabSourceChoice choice = (TabSourceChoice) tabSourceBox.getSelectedItem();
+      if (choice == null) return;
+      TAB_SOURCES.put(tabs.getSelectedComponent(), choice.alias());
+      scheduleSessionSave();
+    });
+    updateTabSourceChoice();
     resultTabs = new JTabbedPane();
     resultTabs.addChangeListener(e -> selectResultTab());
     JPanel resultPanel = new JPanel(new BorderLayout());
@@ -733,7 +785,14 @@ public class Main {
     paging.add(nextPageButton);
     resultHeader.add(paging, BorderLayout.SOUTH);
     updatePageControls();
-    JSplitPane vertical = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tabs, resultPanel);
+    JPanel sqlWorkspace = new JPanel(new BorderLayout());
+    JPanel sqlSourceToolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 3));
+    sqlSourceToolbar.add(new JLabel("Conexão da aba:"));
+    sqlSourceToolbar.add(tabSourceBox);
+    sqlSourceToolbar.add(new JLabel("SQL sem prefixo executa neste banco; SRV_... mantém federação."));
+    sqlWorkspace.add(sqlSourceToolbar, BorderLayout.NORTH);
+    sqlWorkspace.add(tabs, BorderLayout.CENTER);
+    JSplitPane vertical = new JSplitPane(JSplitPane.VERTICAL_SPLIT, sqlWorkspace, resultPanel);
     vertical.setResizeWeight(.48);
     JPanel explorerPanel = new JPanel(new BorderLayout(0, 4));
     tableSearch = new JTextField();
@@ -748,7 +807,7 @@ public class Main {
     status = new JLabel(" Carregue as conexões para iniciar. | " + formatPageSize(preferredPageSize) + " linhas por página");
     status.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
     JPanel top = new JPanel(new BorderLayout());
-    JLabel brand = new JLabel("  ◈  LinkSQL   /   SQL federado   ·   v3.0.0");
+    JLabel brand = new JLabel("  ◈  LinkSQL   /   SQL federado   ·   v3.1.0");
     brand.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 15));
     brand.setBorder(BorderFactory.createEmptyBorder(12, 10, 8, 10));
     top.add(brand, BorderLayout.NORTH);
@@ -831,6 +890,7 @@ public class Main {
     scroll.setLineNumbersEnabled(true);
     scroll.setFoldIndicatorEnabled(true);
     tabs.addTab(title, scroll);
+    TAB_SOURCES.put(scroll, "");
     SAVED_TEXT.put(scroll, area.getText());
     // Autocomplete de digitação: aguarda uma pausa e nunca bloqueia a escrita.
     javax.swing.Timer completionDelay = new javax.swing.Timer(completionDelayMs, e -> {
@@ -1062,6 +1122,7 @@ public class Main {
     }
     OPEN_FILES.remove(tab);
     SAVED_TEXT.remove(tab);
+    TAB_SOURCES.remove(tab);
     tabs.removeTabAt(index);
     if (ensureOneTab && tabs.getTabCount() == 0 && frame.isDisplayable()) addSqlTab();
     scheduleSessionSave();
@@ -1085,6 +1146,7 @@ public class Main {
         Path file = OPEN_FILES.get(tab);
         if (file != null) item.put("file", file.toString());
         item.put("savedText", SAVED_TEXT.getOrDefault(tab, ""));
+        item.put("defaultSource", tabSource(tab));
       }
       session.put("selected", tabs.getSelectedIndex());
       Files.createDirectories(SESSION_FILE.getParent());
@@ -1116,10 +1178,12 @@ public class Main {
           OPEN_FILES.put(tab, Paths.get(entry.get("file").asText()));
         }
         SAVED_TEXT.put(tab, entry.path("savedText").asText(""));
+        TAB_SOURCES.put(tab, entry.path("defaultSource").asText(""));
         updateDirtyTitle(tab);
       }
       int selected = session.path("selected").asInt(0);
       if (tabs.getTabCount() > 0) tabs.setSelectedIndex(Math.max(0, Math.min(selected, tabs.getTabCount() - 1)));
+      updateTabSourceChoice();
     } catch (Exception ex) {
       JOptionPane.showMessageDialog(frame, "Nao foi possivel restaurar a sessao SQL: " + ex.getMessage(),
           "Restaurar sessao", JOptionPane.WARNING_MESSAGE);
@@ -1648,6 +1712,7 @@ public class Main {
     try {
       configure(configPath);
       rebuildTree();
+      updateTabSourceChoice();
       status.setText(" " + connectionNames().size() + " conexões prontas. Selecione uma para explorar.");
     } catch (Exception ex) { showError(ex); }
   }
@@ -1773,7 +1838,28 @@ public class Main {
 
   private static void insertTableSql(TableNode table) {
     JTextArea editor = activeEditor();
-    editor.insert("SELECT * FROM " + qualifiedTable(table) + " FETCH NEXT 100 ROWS ONLY;\n",
+    String selected = tabSource(tabs.getSelectedComponent());
+    String sqlName = qualifiedTable(table);
+    if (selected.equalsIgnoreCase(table.source)) {
+      JdbcConnectionProfile profile = CONNECTIONS.profile(table.source);
+      SqlDatabaseType type = profile.type();
+      String escapedName = switch (type) {
+        case MYSQL -> "`" + table.table.replace("`", "``") + "`";
+        case SQLSERVER -> "[" + table.table.replace("]", "]]") + "]";
+        default -> "\\\"" + table.table.replace("\\\"", "\\\"\\\"") + "\\\"";
+      };
+      sqlName = escapedName;
+      if (table.schema != null && !table.schema.isBlank()
+          && !table.schema.equalsIgnoreCase(profile.schemaPattern())) {
+        String schemaName = switch (type) {
+          case MYSQL -> "`" + table.schema.replace("`", "``") + "`";
+          case SQLSERVER -> "[" + table.schema.replace("]", "]]") + "]";
+          default -> "\\\"" + table.schema.replace("\\\"", "\\\"\\\"") + "\\\"";
+        };
+        sqlName = schemaName + "." + escapedName;
+      }
+    }
+    editor.insert("SELECT * FROM " + sqlName + " FETCH NEXT 100 ROWS ONLY;\n",
         editor.getCaretPosition());
     editor.requestFocusInWindow();
   }
@@ -2079,7 +2165,8 @@ public class Main {
   }
 
   // A aba de resultado representa a posicao do SELECT na execucao, nao o texto SQL.
-  private static void showOrUpdateResultTab(DefaultTableModel model, double elapsed, Component sqlTab, String sql, int slot, int pageSize) {
+  private static void showOrUpdateResultTab(DefaultTableModel model, double elapsed, Component sqlTab,
+                                             String sql, int slot, int pageSize, String tabAlias) {
     JScrollPane scroll;
     if (slot < resultTabs.getTabCount() && resultTabs.getComponentAt(slot) instanceof JScrollPane existing) {
       scroll = existing;
@@ -2095,6 +2182,7 @@ public class Main {
     scroll.putClientProperty("resultFilter", "");
     scroll.putClientProperty("resultFilterColumn", 0);
     scroll.putClientProperty("sqlSourceTab", sqlTab);
+    scroll.putClientProperty("sqlDefaultSource", tabAlias);
     scroll.putClientProperty("sqlQueryKey", sql.trim());
     scroll.putClientProperty("resultPage", 0);
     scroll.putClientProperty("pageSize", pageSize);
@@ -2259,7 +2347,8 @@ public class Main {
     }
     // A consulta original e encapsulada para preservar WHERE, ORDER BY e limites declarados.
     DirectSql directPage = directSql(sql);
-    NativeSqlRouter.Route nativePage = nativeRoute(sql);
+    String tabAlias = (String) scroll.getClientProperty("sqlDefaultSource");
+    NativeSqlRouter.Route nativePage = nativeRoute(sql, tabAlias);
     NativeJdbcPaging.Window nativeWindow;
     try { nativeWindow = nativePage == null ? null : NativeJdbcPaging.window(sql, target, size); }
     catch (SQLException ex) { showError(ex); return; }
@@ -2464,16 +2553,22 @@ public class Main {
     while (sql.endsWith(";")) sql = sql.substring(0, sql.length() - 1).trim();
     if (sql.isBlank()) { status.setText(" Posicione o cursor em uma consulta ou selecione o SQL."); queryEditor.requestFocusInWindow(); return; }
     final String query = sql;
+    final Component sqlTab = tabs.getSelectedComponent();
+    final String tabAlias = tabSource(sqlTab);
+    if (SqlTabRouting.missingAlias(tabAlias, CONNECTIONS.allProfiles())) {
+      showError(new SQLException("Conexão padrão da aba não cadastrada: " + tabAlias
+          + ". Escolha outra conexão ou o modo Federado."));
+      return;
+    }
     try { FederatedQuerySupport.validate(query, CONNECTIONS.allProfiles()); }
     catch (SQLException ex) { showError(ex); return; }
-    final NativeSqlRouter.Route nativeQuery = nativeRoute(query);
+    final NativeSqlRouter.Route nativeQuery = nativeRoute(query, tabAlias);
     final NativeJdbcPaging.Window nativeWindow;
     try { nativeWindow = nativeQuery == null ? null : NativeJdbcPaging.window(query, 0, preferredPageSize); }
     catch (SQLException ex) { showError(ex); return; }
     final String pushedSql;
     try { pushedSql = NativeServerPaging.sql(nativeQuery, nativeWindow); }
     catch (SQLException ex) { showError(ex); return; }
-    final Component sqlTab = tabs.getSelectedComponent();
     final int pageSize = preferredPageSize;
     rememberQuery(query);
     execute.setEnabled(false);
@@ -2488,7 +2583,7 @@ public class Main {
         Connection queryConnection = null;
         Statement stmt = null;
         try {
-          queryConnection = queryConnectionFor(query);
+          queryConnection = queryConnectionFor(query, tabAlias);
           stmt = queryConnection.createStatement();
           phases[0] = System.nanoTime() - started;
           if (currentQuery == this) {
@@ -2502,7 +2597,7 @@ public class Main {
           stmt.setQueryTimeout(120);
           if (nativeWindow == null) configureFetch(stmt, query, pageSize);
           long sqlStarted = System.nanoTime();
-          try (ResultSet rs = stmt.executeQuery(pushedSql != null ? pushedSql : firstPageSql(query, pageSize))) {
+          try (ResultSet rs = stmt.executeQuery(pushedSql != null ? pushedSql : firstPageSql(query, pageSize, tabAlias))) {
             phases[1] = System.nanoTime() - sqlStarted;
             long readStarted = System.nanoTime();
             DefaultTableModel model = pushedSql != null
@@ -2534,15 +2629,15 @@ public class Main {
         try {
           DefaultTableModel model = get();
           double elapsed = (System.nanoTime() - started) / 1_000_000_000.0;
-          showOrUpdateResultTab(model, elapsed, sqlTab, query, 0, pageSize);
+          showOrUpdateResultTab(model, elapsed, sqlTab, query, 0, pageSize, tabAlias);
           trimResultTabs(1);
           String details = String.format(Locale.ROOT,
               "Conexão %.2f s | SQL %.2f s | Leitura %.2f s",
               phases[0] / 1e9, phases[1] / 1e9, phases[2] / 1e9);
           status.setText(" Consulta: " + formatRowCount(model.getRowCount()) + " linhas em "
               + String.format(Locale.ROOT, "%.2f s", elapsed) + " | " + details
-              + " | " + executionLabel(query));
-          status.setToolTipText(details + " | " + executionLabel(query));
+              + " | " + executionLabel(query, tabAlias));
+          status.setToolTipText(details + " | " + executionLabel(query, tabAlias));
         } catch (Exception ex) {
           if (CANCEL_REQUESTED.get()) status.setText(" Consulta cancelada. Resultados anteriores preservados.");
           else { status.setText(" Falha na consulta. Resultados anteriores preservados."); showError(ex); }
@@ -2613,6 +2708,14 @@ public class Main {
     CANCEL_REQUESTED.set(false);
     status.setText(" Executando script: " + commands.size() + " comando(s)...");
     final Component sqlTab = tabs.getSelectedComponent();
+    final String tabAlias = tabSource(sqlTab);
+    if (SqlTabRouting.missingAlias(tabAlias, CONNECTIONS.allProfiles())) {
+      showError(new SQLException("Conexão padrão da aba não cadastrada: " + tabAlias));
+      execute.setEnabled(true);
+      executeScriptButton.setEnabled(true);
+      cancelQueryButton.setEnabled(false);
+      return;
+    }
     final int pageSize = preferredPageSize;
     currentQuery = new SwingWorker<Void, ScriptResult>() {
       private int resultSlot = 0;
@@ -2625,12 +2728,12 @@ public class Main {
           Connection connection = null;
           Statement stmt = null;
           try {
-            connection = queryConnectionFor(sql);
+            connection = queryConnectionFor(sql, tabAlias);
             stmt = connection.createStatement();
             RUNNING_CONNECTION.set(connection);
             RUNNING_STATEMENT.set(stmt);
             if (isCancelled()) break;
-            NativeSqlRouter.Route nativeQuery = nativeRoute(sql);
+            NativeSqlRouter.Route nativeQuery = nativeRoute(sql, tabAlias);
             NativeJdbcPaging.Window nativeWindow = nativeQuery == null ? null
                 : NativeJdbcPaging.window(sql, 0, pageSize);
             String pushedSql = NativeServerPaging.sql(nativeQuery, nativeWindow);
@@ -2640,7 +2743,7 @@ public class Main {
             stmt.setQueryTimeout(120);
             if (nativeWindow == null) configureFetch(stmt, sql, pageSize);
             boolean hasResult = stmt.execute(pushedSql != null ? pushedSql
-                : isPageableSql(sql) ? firstPageSql(sql, pageSize) : executableSql(sql));
+                : isPageableSql(sql) ? firstPageSql(sql, pageSize, tabAlias) : executableSql(sql));
             DefaultTableModel model = null;
             int updated = -1;
             if (hasResult) {
@@ -2654,7 +2757,7 @@ public class Main {
             if (isCancelled() || Thread.currentThread().isInterrupted()) break;
             publish(new ScriptResult(model, (System.nanoTime() - started) / 1_000_000_000.0, index + 1, updated));
           } catch (SQLException ex) {
-            throw nativeRoute(sql) == null && directSql(sql) == null
+            throw nativeRoute(sql, tabAlias) == null && directSql(sql) == null
                 ? FederatedQuerySupport.explain(ex) : ex;
           } finally {
             RUNNING_STATEMENT.compareAndSet(stmt, null);
@@ -2667,7 +2770,8 @@ public class Main {
       }
       protected void process(List<ScriptResult> chunks) {
         for (ScriptResult result : chunks) {
-          if (result.model() != null) showOrUpdateResultTab(result.model(), result.elapsed(), sqlTab, commands.get(result.index() - 1), resultSlot++, pageSize);
+          if (result.model() != null) showOrUpdateResultTab(result.model(), result.elapsed(), sqlTab,
+              commands.get(result.index() - 1), resultSlot++, pageSize, tabAlias);
           status.setText(" Script: comando " + result.index() + "/" + commands.size() +
               (result.model() != null ? " - " + result.model().getRowCount() + " linha(s)." :
                   " - " + result.updated() + " registro(s) afetado(s)."));

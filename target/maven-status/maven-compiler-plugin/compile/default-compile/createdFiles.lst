@@ -72,6 +72,7 @@ br\com\santysqlstudio\SqlConnectionRegistry$1.class
 br\com\santysqlstudio\SqlFavoritesStore.class
 br\com\santysqlstudio\JdbcConnectionProfile.class
 br\com\santysqlstudio\Main$16.class
+br\com\santysqlstudio\Main$36.class
 br\com\santysqlstudio\SqlEditorActions.class
 br\com\santysqlstudio\Main$CompletionPopup.class
 br\com\santysqlstudio\SantySqlGateway.class
@@ -103,11 +104,13 @@ br\com\santysqlstudio\Main$11.class
 br\com\santysqlstudio\FirebirdCompatDialect.class
 br\com\santysqlstudio\Main$19.class
 br\com\santysqlstudio\Main$29.class
+br\com\santysqlstudio\Main$TabSourceChoice.class
 br\com\santysqlstudio\DatabaseCatalog.class
 br\com\santysqlstudio\Main$34.class
 br\com\santysqlstudio\TableMetadataDialog$1.class
 br\com\santysqlstudio\Main$2.class
 br\com\santysqlstudio\ConnectionManagerDialog$2.class
+br\com\santysqlstudio\SqlTabRouting.class
 br\com\santysqlstudio\CsvExportWriter.class
 br\com\santysqlstudio\FederatedQuerySupport$Token.class
 br\com\santysqlstudio\NativeJdbcPaging$Window.class

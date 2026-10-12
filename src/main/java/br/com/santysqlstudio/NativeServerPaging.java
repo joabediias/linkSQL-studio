@@ -29,7 +29,8 @@ final class NativeServerPaging {
           long end = Math.addExact(skip, amount);
           yield text + " ROWS " + start + " TO " + end;
         }
-        case MYSQL, SQLSERVER -> null;
+        case MYSQL -> text + " LIMIT " + amount + " OFFSET " + skip;
+        case SQLSERVER -> null;
       };
     } catch (ArithmeticException ex) {
       throw new SQLException("Intervalo de pagina acima do limite suportado", ex);

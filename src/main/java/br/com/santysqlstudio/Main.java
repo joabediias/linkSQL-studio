@@ -432,7 +432,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("LinkSQL - 2.8.2");
+    frame = new JFrame("LinkSQL - 3.0.0");
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -459,7 +459,7 @@ public class Main {
     JButton openSql = new JButton("Abrir SQL");
     JButton saveSql = new JButton("Salvar SQL");
     JButton closeTab = new JButton("Fechar aba");
-    JButton history = new JButton("Histórico SQL");
+    JButton history = new JButton("Histórico e favoritos");
     JButton formatSql = new JButton("Formatar SQL");
     execute = new JButton("Executar SQL  (Ctrl+Enter)");
     executeScriptButton = new JButton("Executar script");
@@ -493,7 +493,7 @@ public class Main {
     addMenuAction(sqlMenu, "Executar script (Ctrl+Shift+Enter)", executeScriptButton);
     addMenuAction(sqlMenu, "Cancelar consulta", cancelQueryButton);
     addMenuAction(sqlMenu, "Formatar SQL (Ctrl+Shift+F)", formatSql);
-    addMenuAction(sqlMenu, "Historico SQL", history);
+    addMenuAction(sqlMenu, "Histórico e favoritos", history);
     JMenuItem findItem = new JMenuItem("Localizar no editor (Ctrl+F)");
     findItem.addActionListener(e -> showFindReplace(false));
     sqlMenu.add(findItem);
@@ -561,6 +561,7 @@ public class Main {
         Object node = event.getPath().getLastPathComponent();
         if (node instanceof DefaultMutableTreeNode n) {
           if (n.getUserObject() instanceof SourceNode source && !source.loaded) loadTables(n, source.name);
+          if (n.getUserObject() instanceof RoutineFolder folder && !folder.loaded) loadRoutines(n, folder);
           if (n.getUserObject() instanceof TableNode table && !table.loaded) loadColumns(n, table);
         }
       }
@@ -616,6 +617,46 @@ public class Main {
       public void mousePressed(MouseEvent e) { popup(e); }
       public void mouseReleased(MouseEvent e) { popup(e); }
     });
+    // Ações diretamente no alias da conexão, sem carregar tabelas nem senhas.
+    JPopupMenu sourceMenu = new JPopupMenu();
+    JMenuItem editSource = new JMenuItem("Editar conexão...");
+    JMenuItem copySource = new JMenuItem("Copiar alias SQL");
+    JMenuItem refreshSource = new JMenuItem("Atualizar tabelas");
+    sourceMenu.add(editSource); sourceMenu.add(copySource); sourceMenu.add(refreshSource);
+    final DefaultMutableTreeNode[] clickedSource = new DefaultMutableTreeNode[1];
+    explorer.addMouseListener(new MouseAdapter() {
+      private void maybeShow(MouseEvent e) {
+        if (!e.isPopupTrigger()) return;
+        TreePath path = explorer.getPathForLocation(e.getX(), e.getY());
+        if (path == null) return;
+        DefaultMutableTreeNode node = (DefaultMutableTreeNode) path.getLastPathComponent();
+        if (!(node.getUserObject() instanceof SourceNode)) return;
+        clickedSource[0] = node;
+        explorer.setSelectionPath(path);
+        sourceMenu.show(explorer, e.getX(), e.getY());
+      }
+      public void mousePressed(MouseEvent e) { maybeShow(e); }
+      public void mouseReleased(MouseEvent e) { maybeShow(e); }
+    });
+    editSource.addActionListener(e -> {
+      if (clickedSource[0] != null && clickedSource[0].getUserObject() instanceof SourceNode source)
+        ConnectionManagerDialog.show(frame, configPath, CONNECTIONS, Main::loadConfiguration, source.name);
+    });
+    copySource.addActionListener(e -> {
+      if (clickedSource[0] != null && clickedSource[0].getUserObject() instanceof SourceNode source)
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(
+            new java.awt.datatransfer.StringSelection(source.name), null);
+    });
+    refreshSource.addActionListener(e -> {
+      if (clickedSource[0] == null || !(clickedSource[0].getUserObject() instanceof SourceNode source)) return;
+      source.loaded = false;
+      TABLE_CACHE.remove(source.name);
+      clickedSource[0].removeAllChildren();
+      clickedSource[0].add(new DefaultMutableTreeNode("Expandir para carregar tabelas..."));
+      ((DefaultTreeModel) explorer.getModel()).reload(clickedSource[0]);
+      status.setText(" Tabelas de " + source.name + " prontas para atualizar. Expanda a conexão.");
+    });
+
     queryTable.addActionListener(e -> { if (selectedTable[0] != null) insertTableSql(selectedTable[0]); });
     copyTable.addActionListener(e -> {
       if (selectedTable[0] != null) {
@@ -707,7 +748,7 @@ public class Main {
     status = new JLabel(" Carregue as conexões para iniciar. | " + formatPageSize(preferredPageSize) + " linhas por página");
     status.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
     JPanel top = new JPanel(new BorderLayout());
-    JLabel brand = new JLabel("  ◈  LinkSQL   /   SQL federado   ·   v2.8.2");
+    JLabel brand = new JLabel("  ◈  LinkSQL   /   SQL federado   ·   v3.0.0");
     brand.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 15));
     brand.setBorder(BorderFactory.createEmptyBorder(12, 10, 8, 10));
     top.add(brand, BorderLayout.NORTH);
@@ -1099,34 +1140,104 @@ public class Main {
   }
 
   private static void showHistory() {
-    List<String> entries = readHistory();
-    if (entries.isEmpty()) {
+    List<String> history = readHistory();
+    Set<String> favorites;
+    try { favorites = SqlFavoritesStore.read(); }
+    catch (IOException ex) { showError(ex); return; }
+    if (history.isEmpty() && favorites.isEmpty()) {
       JOptionPane.showMessageDialog(frame, "Ainda não existem consultas no histórico.");
       return;
     }
+    // Favoritos não desaparecem quando consultas antigas deixam o histórico.
+    Set<String> combined = new LinkedHashSet<>(favorites);
+    combined.addAll(history);
+    List<String> all = new ArrayList<>(combined);
+    List<String> visible = new ArrayList<>();
     DefaultListModel<String> labels = new DefaultListModel<>();
-    for (String sql : entries) {
-      String oneLine = sql.replaceAll("\\s+", " ").trim();
-      labels.addElement(oneLine.length() > 110 ? oneLine.substring(0, 110) + "..." : oneLine);
-    }
     JList<String> list = new JList<>(labels);
     list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-    list.setSelectedIndex(0);
-    JTextArea preview = new JTextArea(entries.get(0), 10, 70);
+    JTextArea preview = new JTextArea(10, 70);
     preview.setEditable(false);
+    preview.setLineWrap(false);
     preview.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-    list.addListSelectionListener(e -> {
-      if (!e.getValueIsAdjusting() && list.getSelectedIndex() >= 0)
-        preview.setText(entries.get(list.getSelectedIndex()));
+    JTextField search = new JTextField(28);
+    search.putClientProperty("JTextField.placeholderText", "Pesquisar no texto das consultas...");
+    JCheckBox onlyFavorites = new JCheckBox("Somente favoritos");
+    JButton favoriteButton = new JButton("Marcar favorito");
+    favoriteButton.setEnabled(false);
+    Runnable updatePreview = () -> {
+      int selected = list.getSelectedIndex();
+      if (selected < 0 || selected >= visible.size()) {
+        preview.setText("");
+        favoriteButton.setEnabled(false);
+        return;
+      }
+      String sql = visible.get(selected);
+      preview.setText(sql);
+      preview.setCaretPosition(0);
+      favoriteButton.setEnabled(true);
+      favoriteButton.setText(favorites.contains(sql) ? "Remover favorito" : "Marcar favorito");
+    };
+    Runnable filter = () -> {
+      String previous = list.getSelectedIndex() >= 0 && list.getSelectedIndex() < visible.size()
+          ? visible.get(list.getSelectedIndex()) : null;
+      String term = search.getText().toLowerCase(Locale.ROOT).trim();
+      visible.clear();
+      labels.clear();
+      for (String sql : all) {
+        if (onlyFavorites.isSelected() && !favorites.contains(sql)) continue;
+        if (!sql.toLowerCase(Locale.ROOT).contains(term)) continue;
+        visible.add(sql);
+        String oneLine = sql.replaceAll("\\s+", " ").trim();
+        String prefix = favorites.contains(sql) ? "★  " : "    ";
+        labels.addElement(prefix + (oneLine.length() > 108 ? oneLine.substring(0, 108) + "..." : oneLine));
+      }
+      int index = previous == null ? -1 : visible.indexOf(previous);
+      if (!visible.isEmpty()) list.setSelectedIndex(index >= 0 ? index : 0);
+      else updatePreview.run();
+    };
+    list.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) updatePreview.run(); });
+    search.getDocument().addDocumentListener(new DocumentListener() {
+      public void insertUpdate(DocumentEvent e) { filter.run(); }
+      public void removeUpdate(DocumentEvent e) { filter.run(); }
+      public void changedUpdate(DocumentEvent e) { filter.run(); }
     });
-    JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, new JScrollPane(list), new JScrollPane(preview));
+    onlyFavorites.addActionListener(e -> filter.run());
+    favoriteButton.addActionListener(e -> {
+      int index = list.getSelectedIndex();
+      if (index < 0 || index >= visible.size()) return;
+      String sql = visible.get(index);
+      boolean wasFavorite = favorites.contains(sql);
+      if (wasFavorite) favorites.remove(sql);
+      else favorites.add(sql);
+      try { SqlFavoritesStore.write(favorites); }
+      catch (IOException ex) {
+        if (wasFavorite) favorites.add(sql);
+        else favorites.remove(sql);
+        showError(ex);
+      }
+      filter.run();
+    });
+    JPanel tools = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+    tools.add(new JLabel("Pesquisar:"));
+    tools.add(search);
+    tools.add(onlyFavorites);
+    tools.add(favoriteButton);
+    JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
+        new JScrollPane(list), new JScrollPane(preview));
     split.setResizeWeight(.45);
-    split.setPreferredSize(new Dimension(780, 450));
-    int choice = JOptionPane.showConfirmDialog(frame, split, "Histórico de consultas — selecionar para abrir em nova aba",
+    JPanel panel = new JPanel(new BorderLayout(0, 6));
+    panel.add(tools, BorderLayout.NORTH);
+    panel.add(split, BorderLayout.CENTER);
+    panel.setPreferredSize(new Dimension(840, 520));
+    filter.run();
+    int choice = JOptionPane.showConfirmDialog(frame, panel,
+        "Histórico SQL e favoritos — selecionar para abrir em nova aba",
         JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
     if (choice == JOptionPane.OK_OPTION && list.getSelectedIndex() >= 0) {
+      String sql = visible.get(list.getSelectedIndex());
       addSqlTab();
-      activeEditor().setText(entries.get(list.getSelectedIndex()));
+      activeEditor().setText(sql);
       activeEditor().requestFocusInWindow();
     }
   }
@@ -1364,18 +1475,21 @@ public class Main {
       if (!automatic) status.setText(" Qualificador '" + qualifier + "' nao encontrado em FROM/JOIN desta consulta.");
       return;
     } else {
-      Collections.addAll(candidates, SQL_WORDS);
+      boolean expectsTable = SqlAutocompleteHints.expectsTable(left);
+      if (!expectsTable) Collections.addAll(candidates, SQL_WORDS);
       candidates.addAll(connectionNames());
       candidates.addAll(context.cteNames());
       for (List<String> tables : TABLE_CACHE.values()) candidates.addAll(tables);
       if (allowLoad) for (String source : connectionNames()) fetchTables(source, null);
-      for (SqlCompletionContext.TableRef table : context.tables()) {
-        String key = table.source() + "." + table.table();
-        List<String> cols = COLUMN_CACHE.get(key);
-        if (cols != null) candidates.addAll(cols);
-        else if (allowLoad) fetchColumns(table.source(), table.table(), null);
+      if (!expectsTable) {
+        for (SqlCompletionContext.TableRef table : context.tables()) {
+          String key = table.source() + "." + table.table();
+          List<String> cols = COLUMN_CACHE.get(key);
+          if (cols != null) candidates.addAll(cols);
+          else if (allowLoad) fetchColumns(table.source(), table.table(), null);
+        }
+        for (String cte : context.cteNames()) candidates.addAll(context.cteColumns(cte));
       }
-      for (String cte : context.cteNames()) candidates.addAll(context.cteColumns(cte));
     }
 
     java.util.List<String> matches = new ArrayList<>();
@@ -1553,32 +1667,100 @@ public class Main {
     SourceNode source = (SourceNode) node.getUserObject();
     source.loaded = true;
     node.removeAllChildren();
+    node.add(new DefaultMutableTreeNode("Carregando objetos..."));
+    ((DefaultTreeModel) explorer.getModel()).reload(node);
+    new SwingWorker<List<DatabaseCatalog.Entry>, Void>() {
+      protected List<DatabaseCatalog.Entry> doInBackground() throws Exception {
+        try (Connection c = CONNECTIONS.source(name).getConnection()) {
+          return DatabaseCatalog.tables(c, CONNECTIONS.profile(name));
+        }
+      }
+      protected void done() {
+        if (node.getParent() == null) return; // A conexão pode ter sido removida durante a leitura.
+        node.removeAllChildren();
+        try {
+          List<DatabaseCatalog.Entry> loaded = get();
+          List<String> tableNames = new ArrayList<>();
+          Map<String, List<DatabaseCatalog.Entry>> bySchema = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+          for (DatabaseCatalog.Entry entry : loaded) {
+            bySchema.computeIfAbsent(entry.namespace(), unused -> new ArrayList<>()).add(entry);
+            tableNames.add(entry.table());
+          }
+          tableNames.sort(String.CASE_INSENSITIVE_ORDER);
+          TABLE_CACHE.put(name, tableNames.stream().distinct().toList());
+          if (bySchema.isEmpty()) {
+            JdbcConnectionProfile profile = CONNECTIONS.profile(name);
+            String defaultNamespace = DatabaseCatalog.namespace(null, null,
+                profile.schemaPattern(), profile.database());
+            bySchema.put(defaultNamespace, new ArrayList<>());
+          }
+          for (Map.Entry<String, List<DatabaseCatalog.Entry>> schema : bySchema.entrySet()) {
+            String namespace = schema.getKey();
+            DefaultMutableTreeNode schemaNode = new DefaultMutableTreeNode("Schema / banco: " + namespace);
+            DefaultMutableTreeNode tablesNode = new DefaultMutableTreeNode("Tabelas");
+            DefaultMutableTreeNode viewsNode = new DefaultMutableTreeNode("Views");
+            String catalog = null, metadataSchema = null;
+            for (DatabaseCatalog.Entry entry : schema.getValue()) {
+              if (catalog == null) catalog = entry.catalog();
+              if (metadataSchema == null) metadataSchema = entry.schema();
+              DefaultMutableTreeNode item = new DefaultMutableTreeNode(
+                  new TableNode(name, entry.table(), entry.schema()));
+              item.add(new DefaultMutableTreeNode("Expandir para carregar colunas..."));
+              (entry.view() ? viewsNode : tablesNode).add(item);
+            }
+            if (tablesNode.getChildCount() == 0) tablesNode.add(new DefaultMutableTreeNode("Nenhuma tabela"));
+            if (viewsNode.getChildCount() == 0) viewsNode.add(new DefaultMutableTreeNode("Nenhuma view"));
+            schemaNode.add(tablesNode);
+            schemaNode.add(viewsNode);
+            DefaultMutableTreeNode procedures = new DefaultMutableTreeNode(
+                new RoutineFolder(name, catalog, metadataSchema, false));
+            procedures.add(new DefaultMutableTreeNode("Expandir para carregar procedimentos..."));
+            schemaNode.add(procedures);
+            DefaultMutableTreeNode functions = new DefaultMutableTreeNode(
+                new RoutineFolder(name, catalog, metadataSchema, true));
+            functions.add(new DefaultMutableTreeNode("Expandir para carregar funções..."));
+            schemaNode.add(functions);
+            node.add(schemaNode);
+          }
+          status.setText(" " + loaded.size() + " tabela(s)/view(s) de " + name + " carregadas.");
+        } catch (Exception ex) {
+          source.loaded = false;
+          node.add(new DefaultMutableTreeNode("Erro: tente expandir novamente"));
+          showError(ex);
+        }
+        ((DefaultTreeModel) explorer.getModel()).reload(node);
+        explorer.expandPath(new TreePath(node.getPath()));
+      }
+    }.execute();
+  }
+
+  private static void loadRoutines(DefaultMutableTreeNode node, RoutineFolder folder) {
+    folder.loaded = true;
+    node.removeAllChildren();
     node.add(new DefaultMutableTreeNode("Carregando..."));
     ((DefaultTreeModel) explorer.getModel()).reload(node);
     new SwingWorker<List<String>, Void>() {
       protected List<String> doInBackground() throws Exception {
-        List<String> tables = new ArrayList<>();
-        JdbcConnectionProfile profile = CONNECTIONS.profile(name);
-        try (Connection c = CONNECTIONS.source(name).getConnection();
-             ResultSet rs = c.getMetaData().getTables(profile.catalogFor(c),
-                 profile.schemaForMetadata(), "%", new String[]{"TABLE", "VIEW"})) {
-          while (rs.next()) tables.add(rs.getString("TABLE_NAME"));
+        try (Connection c = CONNECTIONS.source(folder.source).getConnection()) {
+          JdbcConnectionProfile profile = CONNECTIONS.profile(folder.source);
+          return DatabaseCatalog.routines(c, profile, folder.catalog,
+              folder.schema != null ? folder.schema : profile.schemaForMetadata(), folder.functions);
         }
-        Collections.sort(tables);
-        return tables;
       }
       protected void done() {
+        if (node.getParent() == null) return;
         node.removeAllChildren();
         try {
-          List<String> loadedTables = get();
-          TABLE_CACHE.put(name, loadedTables);
-          for (String table : loadedTables) {
-            DefaultMutableTreeNode tableNode = new DefaultMutableTreeNode(new TableNode(name, table));
-            tableNode.add(new DefaultMutableTreeNode("Expandir para carregar colunas..."));
-            node.add(tableNode);
-          }
-          status.setText(" Tabelas de " + name + " carregadas.");
-        } catch (Exception ex) { source.loaded = false; node.add(new DefaultMutableTreeNode("Erro: tente expandir novamente")); showError(ex); }
+          List<String> routines = get();
+          if (routines.isEmpty()) node.add(new DefaultMutableTreeNode("Nenhum objeto encontrado"));
+          else for (String routine : routines) node.add(new DefaultMutableTreeNode(routine));
+          status.setText(" " + routines.size() + " " + (folder.functions ? "função(ões)" : "procedimento(s)")
+              + " encontrado(s) em " + folder.source + ".");
+        } catch (Exception ex) {
+          folder.loaded = false;
+          node.add(new DefaultMutableTreeNode("Indisponível: tente expandir novamente"));
+          status.setText(" Metadados de rotinas indisponíveis: " + ex.getMessage());
+        }
         ((DefaultTreeModel) explorer.getModel()).reload(node);
         explorer.expandPath(new TreePath(node.getPath()));
       }
@@ -1606,7 +1788,7 @@ public class Main {
         List<String> columns = new ArrayList<>();
         try (Connection c = CONNECTIONS.source(table.source).getConnection();
              ResultSet rs = c.getMetaData().getColumns(CONNECTIONS.profile(table.source).catalogFor(c),
-                 CONNECTIONS.profile(table.source).schemaForMetadata(), table.table, "%")) {
+                 (table.schema != null ? table.schema : CONNECTIONS.profile(table.source).schemaForMetadata()), table.table, "%")) {
           while (rs.next()) {
             String name = rs.getString("COLUMN_NAME");
             String type = rs.getString("TYPE_NAME");
@@ -2596,9 +2778,25 @@ public class Main {
     }
   }
   private static class TableNode {
-    final String source, table;
+    final String source, table, schema;
     boolean loaded;
-    TableNode(String source, String table) { this.source = source; this.table = table; }
+    TableNode(String source, String table, String schema) {
+      this.source = source; this.table = table; this.schema = schema;
+    }
     public String toString() { return table; }
   }
+
+  private static class RoutineFolder {
+    final String source, catalog, schema;
+    final boolean functions;
+    boolean loaded;
+    RoutineFolder(String source, String catalog, String schema, boolean functions) {
+      this.source = source;
+      this.catalog = catalog;
+      this.schema = schema;
+      this.functions = functions;
+    }
+    public String toString() { return functions ? "Funções" : "Procedimentos"; }
+  }
+
 }

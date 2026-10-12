@@ -29,17 +29,20 @@ br\com\santysqlstudio\GatewayPgWireServer$Column.class
 br\com\santysqlstudio\Main$25.class
 br\com\santysqlstudio\Main$15.class
 br\com\santysqlstudio\SingleServerSqlRouter$Token.class
+br\com\santysqlstudio\Main$RoutineFolder.class
 br\com\santysqlstudio\Main$CompletionPopup$4.class
 br\com\santysqlstudio\TableMetadataDialog$1$1.class
 br\com\santysqlstudio\Main$21.class
 br\com\santysqlstudio\Main$31.class
 br\com\santysqlstudio\StudioSettings.class
+br\com\santysqlstudio\ConnectionManagerDialog$4.class
 br\com\santysqlstudio\SingleServerSqlRouter$Kind.class
 br\com\santysqlstudio\SqlResultModels.class
 br\com\santysqlstudio\SingleServerSqlRouter$Range.class
 br\com\santysqlstudio\SqlCompletionContext$Tok.class
 br\com\santysqlstudio\SqlResultModels$1.class
 br\com\santysqlstudio\Main.class
+br\com\santysqlstudio\SqlAutocompleteHints.class
 br\com\santysqlstudio\Main$32.class
 br\com\santysqlstudio\GatewayPgWireServer$WireMessage.class
 br\com\santysqlstudio\GatewayPgWireServer$SqlEngine.class
@@ -52,6 +55,7 @@ br\com\santysqlstudio\ConnectionVault.class
 br\com\santysqlstudio\Main$20.class
 br\com\santysqlstudio\ConnectionManagerDialog.class
 br\com\santysqlstudio\GatewayPgWireServer.class
+br\com\santysqlstudio\Main$33.class
 br\com\santysqlstudio\NativeSqlRouter$Token.class
 br\com\santysqlstudio\SqlDatabaseType.class
 br\com\santysqlstudio\SqlCompletionContext$Analysis.class
@@ -65,6 +69,7 @@ br\com\santysqlstudio\GatewaySqlExecutor.class
 br\com\santysqlstudio\SqlConnectionRegistry.class
 br\com\santysqlstudio\Main$7.class
 br\com\santysqlstudio\SqlConnectionRegistry$1.class
+br\com\santysqlstudio\SqlFavoritesStore.class
 br\com\santysqlstudio\JdbcConnectionProfile.class
 br\com\santysqlstudio\Main$16.class
 br\com\santysqlstudio\SqlEditorActions.class
@@ -85,9 +90,11 @@ br\com\santysqlstudio\StudioGridHeaders.class
 br\com\santysqlstudio\NativeQueryCount$Word.class
 br\com\santysqlstudio\SqlHistoryStore.class
 br\com\santysqlstudio\Main$3.class
+br\com\santysqlstudio\Main$35.class
 br\com\santysqlstudio\SqlQueryPlanner$DirectSql.class
 br\com\santysqlstudio\TableMetadataDialog$ColumnInfo.class
 br\com\santysqlstudio\ConnectionManagerDialog$1.class
+br\com\santysqlstudio\DatabaseCatalog$Entry.class
 br\com\santysqlstudio\Main$ScriptResult.class
 br\com\santysqlstudio\LinkSqlEmbeddedEngine.class
 br\com\santysqlstudio\NativeSqlRouter$Route.class
@@ -96,6 +103,8 @@ br\com\santysqlstudio\Main$11.class
 br\com\santysqlstudio\FirebirdCompatDialect.class
 br\com\santysqlstudio\Main$19.class
 br\com\santysqlstudio\Main$29.class
+br\com\santysqlstudio\DatabaseCatalog.class
+br\com\santysqlstudio\Main$34.class
 br\com\santysqlstudio\TableMetadataDialog$1.class
 br\com\santysqlstudio\Main$2.class
 br\com\santysqlstudio\ConnectionManagerDialog$2.class

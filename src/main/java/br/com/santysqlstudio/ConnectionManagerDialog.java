@@ -7,12 +7,17 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.event.ListSelectionEvent;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.Arrays;
 import java.util.Locale;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Comparator;
 
 /** Cadastro de perfis com carregamento automatico e senha protegida por usuario Windows. */
 final class ConnectionManagerDialog extends JDialog {
@@ -21,6 +26,11 @@ final class ConnectionManagerDialog extends JDialog {
   private final SqlConnectionRegistry registry;
   private final Runnable onChanged;
   private final DefaultListModel<JdbcConnectionProfile> profiles = new DefaultListModel<>();
+  private final List<JdbcConnectionProfile> allProfiles = new ArrayList<>();
+  private final JTextField search = new JTextField();
+  private final JComboBox<String> filterType = new JComboBox<>();
+  private final JComboBox<String> sorting = new JComboBox<>(new String[]{"Agrupar por banco", "Ordenar por nome"});
+  private final JLabel listCount = new JLabel("Nenhuma conexão");
   private final JList<JdbcConnectionProfile> list = new JList<>(profiles);
   private final JTextField name = new JTextField(25), host = new JTextField(25), port = new JTextField(8),
       database = new JTextField(25), schema = new JTextField(25), username = new JTextField(25),
@@ -30,16 +40,18 @@ final class ConnectionManagerDialog extends JDialog {
   private final JCheckBox remember = new JCheckBox("Guardar senha protegida neste usuário do Windows", true);
   private final JComboBox<ConnectionVault.Duration> duration = new JComboBox<>(ConnectionVault.Duration.values());
   private final JCheckBox trustSqlServer = new JCheckBox("Confiar no certificado do SQL Server (somente ambientes confiáveis)");
+  private final JCheckBox legacyFirebird = new JCheckBox("Compatibilidade Firebird antigo (enableProtocol=*)");
   private final JLabel credentialHint = new JLabel("Senha ainda não cadastrada");
   private final JButton saveButton = new JButton("Salvar conexão"), testButton = new JButton("Testar conexão"),
-      removeButton = new JButton("Excluir"), resetPassword = new JButton("Esquecer senha");
+      removeButton = new JButton("Excluir"), resetPassword = new JButton("Esquecer senha"),
+      duplicateButton = new JButton("Duplicar");
   private String originalName;
   private boolean selecting;
   private ConnectionManagerDialog(JFrame owner, Path file, SqlConnectionRegistry registry, Runnable onChanged) {
     super(owner, "LinkSQL — Gerenciar conexões", true);
     this.file = file; this.registry = registry; this.onChanged = onChanged;
-    setMinimumSize(new Dimension(830, 575));
-    setSize(1000, 665);
+    setMinimumSize(new Dimension(890, 610));
+    setSize(1100, 720);
     setLocationRelativeTo(owner);
     setLayout(new BorderLayout(12, 12));
     ((JComponent)getContentPane()).setBorder(new EmptyBorder(12, 12, 12, 12));
@@ -52,20 +64,48 @@ final class ConnectionManagerDialog extends JDialog {
     add(title, BorderLayout.NORTH);
 
     list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-    list.setCellRenderer((listComponent, value, index, isSelected, cellHasFocus) -> {
-      JLabel label = new JLabel("  " + value.name() + "     ·     " + value.type(), UIManager.getIcon("FileView.hardDriveIcon"), JLabel.LEFT);
-      label.setOpaque(true);
-      label.setBorder(new EmptyBorder(10, 7, 10, 5));
-      label.setBackground(isSelected ? listComponent.getSelectionBackground() : listComponent.getBackground());
-      label.setForeground(isSelected ? listComponent.getSelectionForeground() : listComponent.getForeground());
-      return label;
+    list.setFixedCellHeight(58);
+    list.setCellRenderer((component, value, index, selected, focused) -> {
+      JPanel cell = new JPanel(new BorderLayout(2, 2));
+      cell.setBorder(new EmptyBorder(7, 10, 7, 7));
+      Color bg = selected ? component.getSelectionBackground() : component.getBackground();
+      Color fg = selected ? component.getSelectionForeground() : component.getForeground();
+      cell.setBackground(bg);
+      JLabel top = new JLabel(value.name() + "    ·    " + value.type());
+      top.setFont(top.getFont().deriveFont(Font.BOLD, 13f));
+      top.setForeground(fg);
+      JLabel bottom = new JLabel(connectionLocation(value));
+      bottom.setFont(bottom.getFont().deriveFont(11f));
+      bottom.setForeground(selected ? fg : UIManager.getColor("Label.disabledForeground"));
+      cell.add(top, BorderLayout.NORTH); cell.add(bottom, BorderLayout.SOUTH);
+      return cell;
     });
+    search.putClientProperty("JTextField.placeholderText", "Buscar por nome, servidor ou banco...");
+    search.setToolTipText("Filtra as conexões já cadastradas; não abre conexão com os servidores.");
+    search.getDocument().addDocumentListener(new DocumentListener() {
+      public void insertUpdate(DocumentEvent e) { refreshFilter(); }
+      public void removeUpdate(DocumentEvent e) { refreshFilter(); }
+      public void changedUpdate(DocumentEvent e) { refreshFilter(); }
+    });
+    filterType.addItem("Todos os bancos");
+    for (SqlDatabaseType type : SqlDatabaseType.values()) filterType.addItem(type.toString());
+    filterType.addActionListener(e -> refreshFilter());
+    sorting.addActionListener(e -> refreshFilter());
+    JPanel selectors = new JPanel(new GridLayout(2, 1, 0, 5));
+    selectors.add(filterType); selectors.add(sorting);
     JButton addButton = new JButton("+ Nova conexão");
     addButton.addActionListener(e -> chooseDatabase());
+    JPanel leftTop = new JPanel(new BorderLayout(5, 7));
+    leftTop.add(addButton, BorderLayout.NORTH);
+    JPanel filtering = new JPanel(new BorderLayout(0, 5));
+    filtering.add(search, BorderLayout.NORTH);
+    filtering.add(selectors, BorderLayout.CENTER);
+    leftTop.add(filtering, BorderLayout.CENTER);
     JPanel left = new JPanel(new BorderLayout(4, 7));
-    left.add(addButton, BorderLayout.NORTH);
+    left.add(leftTop, BorderLayout.NORTH);
     left.add(new JScrollPane(list), BorderLayout.CENTER);
-    left.setPreferredSize(new Dimension(260, 500));
+    left.add(listCount, BorderLayout.SOUTH);
+    left.setPreferredSize(new Dimension(320, 520));
     list.addListSelectionListener(this::selected);
 
     JTabbedPane pages = new JTabbedPane();
@@ -89,15 +129,19 @@ final class ConnectionManagerDialog extends JDialog {
     addField(advanced, 0, "Variável de ambiente (legado)", passwordEnv);
     addField(advanced, 1, "URL JDBC (opcional)", jdbcUrl);
     addField(advanced, 2, "SQL Server", trustSqlServer);
+    addField(advanced, 3, "Firebird", legacyFirebird);
+    trustSqlServer.setToolTipText("Ativa trustServerCertificate=true. Evite em produção sem uma justificativa.");
+    legacyFirebird.setToolTipText("Habilita os protocolos antigos do Jaybird quando o servidor Firebird exigir.");
     JTextArea hint = new JTextArea("O LinkSQL utiliza somente leitura por padrão. Ao usar URL JDBC personalizada, confira as propriedades SSL/TLS de cada servidor. A senha nunca será escrita no arquivo de conexões.");
     hint.setEditable(false); hint.setLineWrap(true); hint.setWrapStyleWord(true); hint.setOpaque(false);
-    addField(advanced, 3, "", hint);
+    addField(advanced, 4, "", hint);
     pages.addTab("Conexão", new JScrollPane(primary));
     pages.addTab("Avançado", new JScrollPane(advanced));
     databaseType.addActionListener(e -> {
       if (!selecting && databaseType.getSelectedItem() instanceof SqlDatabaseType t) {
         if (port.getText().isBlank() || isDefaultPort(port.getText())) port.setText(String.valueOf(t.defaultPort()));
         if (username.getText().isBlank()) username.setText(defaultUser(t));
+        updateDatabaseSpecificFields();
       }
     });
 
@@ -106,13 +150,14 @@ final class ConnectionManagerDialog extends JDialog {
     removeButton.addActionListener(e -> deleteProfile());
     testButton.addActionListener(e -> testConnection());
     saveButton.addActionListener(e -> saveProfile());
-    buttons.add(resetPassword); buttons.add(removeButton);
+    duplicateButton.addActionListener(e -> duplicateProfile());
+    buttons.add(resetPassword); buttons.add(duplicateButton); buttons.add(removeButton);
     buttons.add(testButton); buttons.add(saveButton);
     JPanel right = new JPanel(new BorderLayout(5, 8));
     right.add(pages, BorderLayout.CENTER); right.add(buttons, BorderLayout.SOUTH);
 
     JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left, right);
-    split.setResizeWeight(0.26);
+    split.setResizeWeight(0.29);
     add(split, BorderLayout.CENTER);
     JButton close = new JButton("Fechar"); close.addActionListener(e -> dispose());
     JPanel footer = new JPanel(new FlowLayout(FlowLayout.RIGHT)); footer.add(close);
@@ -123,7 +168,14 @@ final class ConnectionManagerDialog extends JDialog {
   }
 
   static void show(JFrame frame, Path path, SqlConnectionRegistry registry, Runnable onChanged) {
-    new ConnectionManagerDialog(frame, path, registry, onChanged).setVisible(true);
+    show(frame, path, registry, onChanged, null);
+  }
+
+  static void show(JFrame frame, Path path, SqlConnectionRegistry registry,
+                   Runnable onChanged, String preferredName) {
+    ConnectionManagerDialog dialog = new ConnectionManagerDialog(frame, path, registry, onChanged);
+    if (preferredName != null) dialog.selectName(preferredName);
+    dialog.setVisible(true);
   }
 
   private static void addField(JPanel panel, int row, String label, JComponent field) {
@@ -154,12 +206,80 @@ final class ConnectionManagerDialog extends JDialog {
     return false;
   }
 
+  /** Apenas metadados locais: pesquisar ou ordenar não conecta aos servidores. */
   private void loadProfiles() {
-    profiles.clear();
+    allProfiles.clear();
     try {
       for (JsonNode node : readDocument().path("connections"))
-        profiles.addElement(JdbcConnectionProfile.fromJson(node));
+        allProfiles.add(JdbcConnectionProfile.fromJson(node));
+      refreshFilter();
     } catch (Exception ex) { error(ex); }
+  }
+
+  private static String connectionLocation(JdbcConnectionProfile profile) {
+    String detail = profile.jdbcUrl().isBlank()
+        ? profile.host() + ":" + profile.port() : "URL JDBC personalizada";
+    String db = profile.database();
+    return detail + (db == null || db.isBlank() ? "" : "  ·  " + db);
+  }
+
+  private void refreshFilter() {
+    String query = search.getText().strip().toLowerCase(Locale.ROOT);
+    String selectedType = (String) filterType.getSelectedItem();
+    String selectedName = list.getSelectedValue() == null ? null : list.getSelectedValue().name();
+    List<JdbcConnectionProfile> matches = new ArrayList<>();
+    for (JdbcConnectionProfile p : allProfiles) {
+      if (selectedType != null && !selectedType.equals("Todos os bancos")
+          && !p.type().toString().equals(selectedType)) continue;
+      String searchable = (p.name() + " " + p.type() + " " + p.host() + " "
+          + p.database() + " " + p.schema()).toLowerCase(Locale.ROOT);
+      if (searchable.contains(query)) matches.add(p);
+    }
+    if (sorting.getSelectedIndex() == 1)
+      matches.sort(Comparator.comparing(JdbcConnectionProfile::name, String.CASE_INSENSITIVE_ORDER));
+    else matches.sort(Comparator.comparing((JdbcConnectionProfile p) -> p.type().ordinal())
+        .thenComparing(JdbcConnectionProfile::name, String.CASE_INSENSITIVE_ORDER));
+    profiles.clear();
+    for (JdbcConnectionProfile p : matches) profiles.addElement(p);
+    listCount.setText("  " + matches.size() + " de " + allProfiles.size() + " conexões");
+    if (selectedName != null) {
+      selectName(selectedName);
+      if (list.getSelectedIndex() < 0) {
+        // Perfil oculto pelo filtro: nao permitir salvar por engano
+        // alterações no perfil que ja nao está visivel.
+        setEmptyForm(SqlDatabaseType.MYSQL);
+      }
+    }
+  }
+
+  private void duplicateProfile() {
+    JdbcConnectionProfile chosen = list.getSelectedValue();
+    if (chosen == null) return;
+    String candidate = chosen.name() + "_COPIA";
+    int n = 2;
+    while (existsProfile(candidate)) candidate = chosen.name() + "_COPIA" + n++;
+    selecting = true;
+    try {
+      originalName = null; // A cópia é um perfil novo, sem compartilhar o segredo DPAPI.
+      list.clearSelection();
+      name.setText(candidate); databaseType.setSelectedItem(chosen.type());
+      host.setText(chosen.host()); port.setText(String.valueOf(chosen.port()));
+      database.setText(chosen.database()); schema.setText(chosen.schema());
+      username.setText(chosen.user()); passwordEnv.setText("LINKSQL_" + candidate + "_PASSWORD");
+      jdbcUrl.setText(chosen.jdbcUrl()); password.setText(""); remember.setSelected(true);
+      duration.setSelectedItem(ConnectionVault.Duration.PERMANENT); duration.setEnabled(true);
+      trustSqlServer.setSelected(chosen.jdbcUrl().toLowerCase(Locale.ROOT).contains("trustservercertificate=true"));
+      legacyFirebird.setSelected(chosen.jdbcUrl().toLowerCase(Locale.ROOT).contains("enableprotocol=*"));
+      updateDatabaseSpecificFields();
+      credentialHint.setText("Cópia sem senha. Informe-a antes de salvar, se desejar lembrá-la.");
+      name.requestFocusInWindow();
+    } finally { selecting = false; }
+  }
+
+  private boolean existsProfile(String target) {
+    for (JdbcConnectionProfile p : allProfiles)
+      if (p.name().equalsIgnoreCase(target)) return true;
+    return false;
   }
 
   private void selected(ListSelectionEvent event) {
@@ -178,6 +298,8 @@ final class ConnectionManagerDialog extends JDialog {
       duration.setSelectedItem(ConnectionVault.policy(chosen.name()));
       duration.setEnabled(remember.isSelected());
       trustSqlServer.setSelected(chosen.jdbcUrl().toLowerCase(Locale.ROOT).contains("trustservercertificate=true"));
+      legacyFirebird.setSelected(chosen.jdbcUrl().toLowerCase(Locale.ROOT).contains("enableprotocol=*"));
+      updateDatabaseSpecificFields();
       credentialHint.setText(ConnectionVault.has(chosen.name()) ? "Senha protegida salva. Deixe vazio para manter." :
           "Senha não salva. Informe uma para lembrar.");
     } finally { selecting = false; }
@@ -192,9 +314,20 @@ final class ConnectionManagerDialog extends JDialog {
     JPanel cards = new JPanel(new GridLayout(0, 2, 12, 12));
     cards.setBorder(new EmptyBorder(14, 14, 14, 14));
     for (SqlDatabaseType type : SqlDatabaseType.values()) {
-      JButton button = new JButton("  " + type.toString());
-      button.setFont(button.getFont().deriveFont(Font.BOLD, 15f));
-      button.setPreferredSize(new Dimension(195, 75));
+      String description = switch(type) {
+        case MYSQL -> "Bancos MySQL e compatíveis";
+        case ORACLE -> "Serviços Oracle Database";
+        case POSTGRESQL -> "Bancos e schemas PostgreSQL";
+        case SQLSERVER -> "Microsoft SQL Server";
+        case FIREBIRD -> "Arquivos FDB em servidores Firebird";
+      };
+      JButton button = new JButton("<html><div style='text-align:left'><b>" + type
+          + "</b><br><small>" + description + "</small></div></html>");
+      button.setHorizontalAlignment(SwingConstants.LEFT);
+      button.setIcon(UIManager.getIcon("FileView.hardDriveIcon"));
+      button.putClientProperty("JButton.buttonType", "roundRect");
+      button.setFont(button.getFont().deriveFont(14f));
+      button.setPreferredSize(new Dimension(270, 78));
       button.addActionListener(e -> { wizard.dispose(); setEmptyForm(type); });
       cards.add(button);
     }
@@ -212,9 +345,24 @@ final class ConnectionManagerDialog extends JDialog {
       jdbcUrl.setText(""); password.setText(""); remember.setSelected(true);
       duration.setSelectedItem(ConnectionVault.Duration.PERMANENT); duration.setEnabled(true);
       trustSqlServer.setSelected(false);
+      legacyFirebird.setSelected(false);
+      updateDatabaseSpecificFields();
       credentialHint.setText("Informe a senha para guardá-la protegida pelo Windows.");
       name.requestFocusInWindow();
     } finally { selecting = false; }
+  }
+
+  private void updateDatabaseSpecificFields() {
+    SqlDatabaseType chosen = (SqlDatabaseType) databaseType.getSelectedItem();
+    trustSqlServer.setEnabled(chosen == SqlDatabaseType.SQLSERVER);
+    legacyFirebird.setEnabled(chosen == SqlDatabaseType.FIREBIRD);
+  }
+
+  private static String firebirdProtocolUrl(String jdbc, boolean enabled) {
+    // Remover apenas este parâmetro, sem tocar nos demais parâmetros JDBC.
+    String clean = jdbc.replaceAll("(?i)([?&])enableProtocol=\\*(?=(&|$))", "$1")
+        .replace("?&", "?").replace("&&", "&").replaceAll("[?&]$", "");
+    return enabled ? clean + (clean.contains("?") ? "&" : "?") + "enableProtocol=*" : clean;
   }
 
   private JdbcConnectionProfile formProfile() {
@@ -223,9 +371,20 @@ final class ConnectionManagerDialog extends JDialog {
     try { parsedPort = Integer.parseInt(port.getText().strip()); }
     catch (Exception ex) { throw new IllegalArgumentException("Informe uma porta válida."); }
     String customUrl = jdbcUrl.getText().strip();
-    if (type == SqlDatabaseType.SQLSERVER && trustSqlServer.isSelected() && customUrl.isEmpty()) {
-      customUrl = "jdbc:sqlserver://" + host.getText().strip() + ":" + parsedPort
-          + ";databaseName=" + database.getText().strip() + ";encrypt=true;trustServerCertificate=true";
+    if (type == SqlDatabaseType.SQLSERVER) {
+      if (customUrl.isEmpty() && trustSqlServer.isSelected()) {
+        customUrl = "jdbc:sqlserver://" + host.getText().strip() + ":" + parsedPort
+            + ";databaseName=" + database.getText().strip() + ";encrypt=true;trustServerCertificate=true";
+      } else if (!customUrl.isEmpty()) {
+        customUrl = customUrl.replaceAll("(?i);trustServerCertificate=(true|false)", "");
+        if (trustSqlServer.isSelected()) customUrl += ";trustServerCertificate=true";
+      }
+    }
+    if (type == SqlDatabaseType.FIREBIRD) {
+      if (customUrl.isEmpty() && legacyFirebird.isSelected()) {
+        customUrl = type.url(host.getText().strip(), parsedPort, database.getText().strip());
+      }
+      if (!customUrl.isEmpty()) customUrl = firebirdProtocolUrl(customUrl, legacyFirebird.isSelected());
     }
     JdbcConnectionProfile candidate = new JdbcConnectionProfile(name.getText().strip(), type,
         host.getText().strip(), parsedPort, database.getText().strip(), schema.getText().strip(),

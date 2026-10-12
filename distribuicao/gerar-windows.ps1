@@ -178,7 +178,7 @@ try {
 
     # Nao incluir nenhum JSON de conexoes no instalador (podem conter dados internos).
     @'
-LinkSQL 2.8.2
+LinkSQL 3.0.0
 - O arquivo de conexoes da versao instalada fica em:
   %USERPROFILE%\.santysql-studio\config\connections.json
 - Configure suas conexoes pelo menu Conexoes > Gerenciar conexoes.
@@ -192,7 +192,7 @@ LinkSQL 2.8.2
     if (Test-Path $icone) { $icones = @('--icon', $icone) }
     # Modulos extras para JDBC, GUI e bibliotecas usadas pelo Calcite.
     $modulos = 'java.desktop,java.sql,java.naming,java.management,java.scripting,java.net.http,java.instrument,java.prefs,java.security.jgss,jdk.crypto.ec,jdk.unsupported'
-    $jpackageBase = @('--name', 'LinkSQL', '--app-version', '2.8.2',
+    $jpackageBase = @('--name', 'LinkSQL', '--app-version', '3.0.0',
         '--vendor', 'LinkSQL', '--input', $entrada,
         '--main-jar', $nomeJarDistribuicao, '--main-class', 'br.com.santysqlstudio.Main',
         '--java-options', '-Dsantysql.packaged=true', '--add-modules', $modulos) + $icones
@@ -204,7 +204,7 @@ LinkSQL 2.8.2
     Write-Host "Portatil criado: $executavel" -ForegroundColor Green
 
     if (!$SemZip) {
-        $zipPortatil = Join-Path $destino 'LinkSQL-2.8.2-portatil.zip'
+        $zipPortatil = Join-Path $destino 'LinkSQL-3.0.0-portatil.zip'
         Compress-Archive -Path (Join-Path $destino 'LinkSQL') -DestinationPath $zipPortatil -CompressionLevel Optimal -Force
         Write-Host "ZIP portatil: $zipPortatil" -ForegroundColor Green
     }

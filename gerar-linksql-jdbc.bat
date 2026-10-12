@@ -1,11 +1,11 @@
 @echo off
 setlocal EnableExtensions
 
-rem LinkSQL JDBC 0.5 - verifica a estrutura antes de compilar.
+rem LinkSQL JDBC 0.6 - verifica a estrutura antes de compilar.
 set "RAIZ=%~dp0"
 set "SCRIPT=%RAIZ%ferramentas\gerar-linksql-jdbc.ps1"
 set "MODULO=%RAIZ%integracao\linksql-jdbc\pom.xml"
-set "FONTE=%RAIZ%src\main\java\br\com\santysqlstudio"
+set "FONTE=%RAIZ%src\main\java\br\com\linksql"
 
 pushd "%RAIZ%" 2>nul
 if errorlevel 1 (
@@ -16,7 +16,7 @@ if errorlevel 1 (
 )
 
 echo =========================================
-echo    LinkSQL JDBC - Gerador automatico 0.5
+echo    LinkSQL JDBC - Gerador automatico 0.6
 echo =========================================
 echo Projeto: "%CD%"
 echo.
@@ -33,7 +33,7 @@ if not exist "%MODULO%" (
   echo ERRO: modulo JDBC nao encontrado.
   echo Esperado: "%MODULO%"
   echo.
-  echo Extraia o pacote completo 'LinkSQL-JDBC-gerador-automatico-0.4.zip'
+  echo Confira a pasta integracao\linksql-jdbc com os fontes atuais do LinkSQL 3.3.1
   echo na RAIZ do projeto LinkSQL, mantendo todas as subpastas.
   goto :erro
 )
@@ -61,7 +61,7 @@ if not "%RET%"=="0" (
 )
 
 echo.
-echo SUCESSO: confira target\linksql-jdbc\linksql-jdbc-bundle-0.5.jar
+echo SUCESSO: confira target\linksql-jdbc\linksql-jdbc-bundle-0.6.jar
 popd
 pause
 exit /b 0
@@ -73,7 +73,7 @@ echo   LinkSQL\pom.xml
 echo   LinkSQL\GERAR-LINKSQL-JDBC.bat
 echo   LinkSQL\ferramentas\gerar-linksql-jdbc.ps1
 echo   LinkSQL\integracao\linksql-jdbc\pom.xml
-echo   LinkSQL\src\main\java\br\com\santysqlstudio\
+echo   LinkSQL\src\main\java\br\com\linksql\
 echo.
 popd
 pause

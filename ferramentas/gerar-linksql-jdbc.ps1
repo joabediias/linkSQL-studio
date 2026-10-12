@@ -24,7 +24,7 @@ try {
     $raiz = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
     $modulo = Join-Path $raiz 'integracao\linksql-jdbc'
     $pom = Join-Path $modulo 'pom.xml'
-    $fontesMotor = Join-Path $raiz 'src\main\java\br\com\santysqlstudio'
+    $fontesMotor = Join-Path $raiz 'src\main\java\br\com\linksql'
     $fontesDriver = Join-Path $raiz 'integracao\jdbc-src\br\com\linksql\jdbc'
     if (-not (Test-Path -LiteralPath $pom -PathType Leaf)) { throw "pom.xml do gerador nao encontrado: $pom" }
     if (-not (Test-Path -LiteralPath $fontesMotor -PathType Container)) { throw "Fontes do LinkSQL nao encontrados: $fontesMotor" }
@@ -64,7 +64,7 @@ try {
     # Mantemos somente as classes que fazem parte do engine, sem Main.java / Swing do editor.
     $classes = @(
         'FederatedCountSupport', 'FederatedQuerySupport', 'FirebirdCompatDialect',
-        'GatewaySqlGuard', 'JdbcConnectionProfile', 'ConnectionVault', 'LinkSqlEmbeddedEngine',
+        'ReadOnlySqlGuard', 'JdbcConnectionProfile', 'ConnectionVault', 'LinkSqlPaths', 'LinkSqlEmbeddedEngine',
         'NativeJdbcPaging', 'NativeQueryCount', 'NativeServerPaging', 'NativeSqlRouter',
         'SingleServerSqlRouter', 'SqlConnectionRegistry', 'SqlDatabaseType',
         'SqlPageTotals', 'SqlQueryPlanner', 'SqlResultModels'
@@ -73,7 +73,7 @@ try {
     $alvoModulo = Join-Path $modulo 'target'
     $staging = Join-Path $alvoModulo 'build-src'
     if (Test-Path -LiteralPath $alvoModulo) { Remove-Item -LiteralPath $alvoModulo -Recurse -Force }
-    $destMotor = Join-Path $staging 'br\com\santysqlstudio'
+    $destMotor = Join-Path $staging 'br\com\linksql'
     $destDriver = Join-Path $staging 'br\com\linksql\jdbc'
     New-Item -ItemType Directory -Path $destMotor, $destDriver -Force | Out-Null
     foreach ($name in $classes) {
@@ -92,10 +92,10 @@ try {
     $registry = Get-Content -LiteralPath (Join-Path $destMotor 'SqlConnectionRegistry.java') -Raw -Encoding UTF8
     $vault = Get-Content -LiteralPath (Join-Path $destMotor 'ConnectionVault.java') -Raw -Encoding UTF8
     if ($registry -notmatch 'ConnectionVault.get' -or $vault -notmatch 'LINKSQL_DPAPI_V1') {
-        throw 'Fontes do cofre DPAPI desatualizados. Aplique a correcao JDBC 0.5 para o LinkSQL 2.8.2.'
+        throw 'Fontes do cofre DPAPI desatualizados. Use as classes LinkSQL 3.3.1 revisadas, incluindo ConnectionVault.'
     }
     if ($engine -notmatch 'configureLazy' -or $registry -notmatch 'configureLazy') {
-        throw 'Fontes JDBC sem configureLazy. Reextraia o pacote completo do gerador 0.4.2 na raiz do projeto LinkSQL, substituindo os dois fontes indicados no LEIA-ME.'
+        throw 'Fontes JDBC sem configureLazy. Verifique o LinkSqlEmbeddedEngine e o SqlConnectionRegistry na fonte 3.3.1.'
     }
 
     Executar-Nativo -Executavel $mvn -Argumentos @('-B', '-ntp', '-f', $pom, '-DskipTests', 'package')
@@ -110,8 +110,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Falha ao ler o conteudo do JAR gerado.' }
     foreach ($obrigatorio in @(
         'br/com/linksql/jdbc/LinkSqlDriver.class',
-        'br/com/santysqlstudio/LinkSqlEmbeddedEngine.class',
-        'br/com/santysqlstudio/ConnectionVault.class',
+        'br/com/linksql/LinkSqlEmbeddedEngine.class',
+        'br/com/linksql/ConnectionVault.class',
         'org/apache/calcite/jdbc/CalciteConnection.class',
         'META-INF/services/java.sql.Driver'
     )) {

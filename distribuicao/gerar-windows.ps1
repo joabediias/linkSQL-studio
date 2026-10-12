@@ -163,7 +163,7 @@ try {
     $cabecalhoClasspath = 'Class-Path: ' + $classpath
     $linhasManifesto = [System.Collections.Generic.List[string]]::new()
     # O JAR principal ja possui Manifest-Version; nao repetir no merge.
-    $linhasManifesto.Add('Main-Class: br.com.santysqlstudio.Main')
+    $linhasManifesto.Add('Main-Class: br.com.linksql.Main')
     while ($cabecalhoClasspath.Length -gt 70) {
         $linhasManifesto.Add($cabecalhoClasspath.Substring(0, 70))
         $cabecalhoClasspath = ' ' + $cabecalhoClasspath.Substring(70)
@@ -178,12 +178,13 @@ try {
 
     # Nao incluir nenhum JSON de conexoes no instalador (podem conter dados internos).
     @'
-LinkSQL 3.1.1
+LinkSQL 3.3.1
 - O arquivo de conexoes da versao instalada fica em:
-  %USERPROFILE%\.santysql-studio\config\connections.json
+  %USERPROFILE%\.linksql\config\connections.json
 - Configure suas conexoes pelo menu Conexoes > Gerenciar conexoes.
-- A senha e solicitada ao clicar em Carregar conexoes, se nao houver
-  variavel de ambiente configurada. Nao e gravada em arquivo.
+- As conexoes sao abertas sob demanda; a senha e solicitada no primeiro
+  uso se nao houver credencial DPAPI valida ou variavel de ambiente.
+- Senhas lembradas ficam protegidas pelo Windows, nao em texto puro no JSON.
 - Historico, sessoes, preferencias e logs continuam no perfil do usuario.
 '@ | Set-Content -LiteralPath (Join-Path $entrada 'LEIA-ME.txt') -Encoding UTF8
 
@@ -192,10 +193,10 @@ LinkSQL 3.1.1
     if (Test-Path $icone) { $icones = @('--icon', $icone) }
     # Modulos extras para JDBC, GUI e bibliotecas usadas pelo Calcite.
     $modulos = 'java.desktop,java.sql,java.naming,java.management,java.scripting,java.net.http,java.instrument,java.prefs,java.security.jgss,jdk.crypto.ec,jdk.unsupported'
-    $jpackageBase = @('--name', 'LinkSQL', '--app-version', '3.1.1',
+    $jpackageBase = @('--name', 'LinkSQL', '--app-version', '3.3.1',
         '--vendor', 'LinkSQL', '--input', $entrada,
-        '--main-jar', $nomeJarDistribuicao, '--main-class', 'br.com.santysqlstudio.Main',
-        '--java-options', '-Dsantysql.packaged=true', '--add-modules', $modulos) + $icones
+        '--main-jar', $nomeJarDistribuicao, '--main-class', 'br.com.linksql.Main',
+        '--java-options', '-Dlinksql.packaged=true', '--add-modules', $modulos) + $icones
 
     Write-Host 'Criando aplicativo portatil (EXE com Java incluido)...' -ForegroundColor Yellow
     Executar $jpackage (@('--type', 'app-image', '--dest', $destino) + $jpackageBase)
@@ -204,7 +205,7 @@ LinkSQL 3.1.1
     Write-Host "Portatil criado: $executavel" -ForegroundColor Green
 
     if (!$SemZip) {
-        $zipPortatil = Join-Path $destino 'LinkSQL-3.1.1-portatil.zip'
+        $zipPortatil = Join-Path $destino 'LinkSQL-3.3.1-portatil.zip'
         Compress-Archive -Path (Join-Path $destino 'LinkSQL') -DestinationPath $zipPortatil -CompressionLevel Optimal -Force
         Write-Host "ZIP portatil: $zipPortatil" -ForegroundColor Green
     }

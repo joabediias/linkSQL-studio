@@ -1,4 +1,4 @@
-Main-Class: br.com.santysqlstudio.Main
+Main-Class: br.com.linksql.Main
 Class-Path: lib/accessors-smart-2.5.0.jar lib/aggdesigner-algorithm-6.
  0.jar lib/apiguardian-api-1.1.2.jar lib/asm-9.3.jar lib/avatica-core-
  1.25.0.jar lib/avatica-metrics-1.25.0.jar lib/calcite-core-1.38.0.jar

@@ -1,0 +1,18 @@
+# Saídas geradas por Maven e empacotamento
+**/target/
+*.class
+*.log
+
+# Dados locais privados — nunca versionar
+.linksql/
+.santysql-studio/
+config/connections.json
+config/credentials.dpapi.json
+**/credentials.dpapi.json
+**/sql-session.json
+**/sql-history.txt
+**/sql-favorites.txt
+
+# Arquivos do Windows e IDE
+Thumbs.db
+.DS_Store

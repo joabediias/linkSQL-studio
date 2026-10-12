@@ -1,7 +1,8 @@
-﻿LinkSQL 3.1.1
+﻿LinkSQL 3.3.1
 - O arquivo de conexoes da versao instalada fica em:
-  %USERPROFILE%\.santysql-studio\config\connections.json
+  %USERPROFILE%\.linksql\config\connections.json
 - Configure suas conexoes pelo menu Conexoes > Gerenciar conexoes.
-- A senha e solicitada ao clicar em Carregar conexoes, se nao houver
-  variavel de ambiente configurada. Nao e gravada em arquivo.
+- As conexoes sao abertas sob demanda; a senha e solicitada no primeiro
+  uso se nao houver credencial DPAPI valida ou variavel de ambiente.
+- Senhas lembradas ficam protegidas pelo Windows, nao em texto puro no JSON.
 - Historico, sessoes, preferencias e logs continuam no perfil do usuario.

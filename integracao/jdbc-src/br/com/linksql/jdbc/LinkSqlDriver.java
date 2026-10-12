@@ -58,11 +58,13 @@ public final class LinkSqlDriver implements Driver {
       try { return Path.of(option).toAbsolutePath().normalize(); }
       catch (RuntimeException ex) { throw new SQLException("Caminho config invalido", "08001", ex); }
     }
-    // Pasta legada preservada na renomeacao do Studio para LinkSQL.
-    Path home = Path.of(System.getProperty("user.home"), ".santysql-studio", "config", "connections.json");
-    if (Files.isRegularFile(home)) return home;
+    Path current = Path.of(System.getProperty("user.home"), ".linksql", "config", "connections.json");
+    if (Files.isRegularFile(current)) return current;
+    // Um projeto ainda não migrado pode ser lido sem alterar seu arquivo original.
+    Path previous = Path.of(System.getProperty("user.home"), ".santysql-studio", "config", "connections.json");
+    if (Files.isRegularFile(previous)) return previous;
     Path local = Path.of("config", "connections.json").toAbsolutePath();
-    return Files.isRegularFile(local) ? local : home;
+    return Files.isRegularFile(local) ? local : current;
   }
 
   @Override public DriverPropertyInfo[] getPropertyInfo(String url, Properties props) {
@@ -71,7 +73,7 @@ public final class LinkSqlDriver implements Driver {
     return new DriverPropertyInfo[] { config };
   }
   @Override public int getMajorVersion() { return 0; }
-  @Override public int getMinorVersion() { return 5; }
+  @Override public int getMinorVersion() { return 6; }
   @Override public boolean jdbcCompliant() { return false; }
   @Override public Logger getParentLogger() { return Logger.getLogger("br.com.linksql.jdbc"); }
 }

@@ -1,6 +1,6 @@
 package br.com.linksql.jdbc;
 
-import br.com.santysqlstudio.LinkSqlEmbeddedEngine;
+import br.com.linksql.LinkSqlEmbeddedEngine;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;

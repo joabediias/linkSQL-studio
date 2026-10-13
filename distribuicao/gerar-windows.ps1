@@ -7,6 +7,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
+. (Join-Path $PSScriptRoot 'preparar-instalador-portugues.ps1')
 
 function Executar([string]$Comando, [string[]]$Parametros) {
     Write-Host ('> ' + $Comando + ' ' + ($Parametros -join ' ')) -ForegroundColor Cyan
@@ -89,6 +90,9 @@ try {
     }
     Write-Host "jpackage localizado: $jpackage" -ForegroundColor Green
     $jdkBin = Split-Path $jpackage -Parent
+    $jdkHome = Split-Path $jdkBin -Parent
+    $env:JAVA_HOME = $jdkHome
+    $env:PATH = $jdkBin + ';' + $env:PATH
     $jarExe = Join-Path $jdkBin 'jar.exe'
     $javaExe = Join-Path $jdkBin 'java.exe'
     if (!(Test-Path $jarExe) -or !(Test-Path $javaExe)) { throw 'JDK incompleto: jar.exe ou java.exe ausente.' }
@@ -126,6 +130,12 @@ try {
         '-DincludeScope=runtime', "-DoutputDirectory=$lib")
     $dependencias = @(Get-ChildItem -LiteralPath $lib -Filter '*.jar' -File | Sort-Object Name)
     if ($dependencias.Count -eq 0) { throw 'Nenhuma dependencia runtime foi copiada. Verifique o pom.xml.' }
+    # Verificacoes locais obrigatorias antes de gerar os pacotes 4.0.0.
+    $classpathTestes = (Join-Path $pastaTarget 'test-classes') + ';' +
+        (Join-Path $pastaTarget 'classes') + ';' + (Join-Path $lib '*')
+    foreach ($teste in @('LinkSqlCoreRegressionTest', 'LinkSqlMigrationRegressionTest', 'LinkSqlRelease40RegressionTest')) {
+        Executar $javaExe @('-Djava.awt.headless=true', '-Xmx512m', '-cp', $classpathTestes, "br.com.linksql.$teste")
+    }
 
     # Escolhe somente o JAR principal do Maven (nao sources, original, shaded ou javadoc).
     [xml]$pom = Get-Content (Join-Path $raiz 'pom.xml') -Raw
@@ -178,7 +188,7 @@ try {
 
     # Nao incluir nenhum JSON de conexoes no instalador (podem conter dados internos).
     @'
-LinkSQL 3.4.4
+LinkSQL 4.0.0
 - O arquivo de conexoes da versao instalada fica em:
   %USERPROFILE%\.linksql\config\connections.json
 - Configure suas conexoes pelo menu Conexoes > Gerenciar conexoes.
@@ -192,11 +202,13 @@ LinkSQL 3.4.4
     $icone = Join-Path $PSScriptRoot 'LinkSQL.ico'
     if (Test-Path $icone) { $icones = @('--icon', $icone) }
     # Modulos extras para JDBC, GUI e bibliotecas usadas pelo Calcite.
-    $modulos = 'java.desktop,java.sql,java.naming,java.management,java.scripting,java.net.http,java.instrument,java.prefs,java.security.jgss,jdk.crypto.ec,jdk.unsupported'
-    $jpackageBase = @('--name', 'LinkSQL', '--app-version', '3.4.4',
+    $modulos = 'java.desktop,java.sql,java.naming,java.management,java.scripting,java.net.http,java.instrument,java.prefs,java.security.jgss,jdk.crypto.ec,jdk.unsupported,jdk.localedata'
+    $jpackageBase = @('--name', 'LinkSQL', '--app-version', '4.0.0',
         '--vendor', 'LinkSQL', '--input', $entrada,
         '--main-jar', $nomeJarDistribuicao, '--main-class', 'br.com.linksql.Main',
-        '--java-options', '-Dlinksql.packaged=true', '--add-modules', $modulos) + $icones
+        '--java-options', '-Dlinksql.packaged=true',
+        '--java-options', '-Duser.language=pt', '--java-options', '-Duser.country=BR',
+        '--add-modules', $modulos) + $icones
 
     Write-Host 'Criando aplicativo portatil (EXE com Java incluido)...' -ForegroundColor Yellow
     Executar $jpackage (@('--type', 'app-image', '--dest', $destino) + $jpackageBase)
@@ -205,26 +217,33 @@ LinkSQL 3.4.4
     Write-Host "Portatil criado: $executavel" -ForegroundColor Green
 
     if (!$SemZip) {
-        $zipPortatil = Join-Path $destino 'LinkSQL-3.4.4-portatil.zip'
+        $zipPortatil = Join-Path $destino 'LinkSQL-4.0.0-portatil.zip'
         Compress-Archive -Path (Join-Path $destino 'LinkSQL') -DestinationPath $zipPortatil -CompressionLevel Optimal -Force
         Write-Host "ZIP portatil: $zipPortatil" -ForegroundColor Green
     }
 
     if (!$SomentePortatil) {
         $temWix3 = (Get-Command candle.exe -ErrorAction SilentlyContinue) -and (Get-Command light.exe -ErrorAction SilentlyContinue)
-        $temWix5 = (Get-Command wix.exe -ErrorAction SilentlyContinue)
-        if (!$temWix3 -and !$temWix5) {
-            Write-Warning 'WiX Toolset ausente. Aplicativo portatil pronto; para gerar instalador EXE instale WiX compativel com seu JDK e execute novamente.'
+        if (!$temWix3) {
+            Write-Warning 'WiX Toolset ausente. Aplicativo portatil pronto; para gerar instalador EXE use JDK 17/21 com WiX 3 no PATH e execute novamente.'
         } else {
             Write-Host 'Criando instalador EXE...' -ForegroundColor Yellow
             try {
+                $recursosPt = Preparar-RecursosPortugues $jdkHome $pastaTarget (Join-Path $PSScriptRoot 'recursos-windows')
+                $installerWork = Join-Path $pastaTarget 'instalador-verificacao'
+                if (Test-Path $installerWork) { Remove-Item -LiteralPath $installerWork -Recurse -Force }
                 Executar $jpackage (@('--type', 'exe', '--dest', $destino,
+                    '--resource-dir', $recursosPt, '--temp', $installerWork, '--verbose',
                     '--win-menu', '--win-shortcut', '--win-per-user-install', '--win-dir-chooser',
                     '--win-upgrade-uuid', '2eb6546d-303d-4b43-883b-516298db0270') + $jpackageBase)
-                Write-Host 'Instalador Windows criado em target\distribuicao\.' -ForegroundColor Green
+                Verificar-IdiomaMsi $installerWork
+                Write-Host 'Instalador Windows 4.0.0 em portugues do Brasil criado em target\distribuicao\.' -ForegroundColor Green
             } catch {
                 Write-Warning "Nao foi possivel gerar o instalador EXE: $($_.Exception.Message)"
-                Write-Warning 'O EXE portatil ja esta pronto e pode ser distribuido.'
+                Write-Warning 'O EXE portatil ja esta pronto. O instalador nao foi validado; nao o distribua.'
+                $instaladorFalho = Join-Path $destino 'LinkSQL-4.0.0.exe'
+                if (Test-Path $instaladorFalho) { Remove-Item -LiteralPath $instaladorFalho -Force }
+                throw
             }
         }
     }

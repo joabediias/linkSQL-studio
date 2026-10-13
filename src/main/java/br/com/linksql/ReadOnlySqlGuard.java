@@ -29,7 +29,9 @@ final class ReadOnlySqlGuard {
   }
 
   /** Tokeniza ignorando literais, identificadores entre aspas e comentarios. */
-  private static List<String> scan(String sql) throws SQLException {
+  static List<String> scan(String sql) throws SQLException {
+    if (sql == null || sql.isBlank() || sql.length() > 2_000_000)
+      throw new SQLException("SQL vazio ou acima do tamanho permitido", "42000");
     List<String> words = new ArrayList<>();
     int semicolons = 0;
     boolean afterSemicolon = false;
@@ -41,6 +43,8 @@ final class ReadOnlySqlGuard {
       }
       if (c == '#') { while (i < sql.length() && sql.charAt(i) != '\n') i++; continue; }
       if (c == '/' && i + 1 < sql.length() && sql.charAt(i + 1) == '*') {
+        if (i + 2 < sql.length() && sql.charAt(i + 2) == '!')
+          throw new SQLException("Comentários executáveis não são permitidos", "25006");
         i = sql.indexOf("*/", i + 2);
         if (i < 0) throw new SQLException("Comentario SQL nao terminado", "42000");
         i += 2; continue;

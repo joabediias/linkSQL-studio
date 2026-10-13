@@ -29,7 +29,13 @@ final class LinkSqlSettings {
   static final int DEFAULT_FILTER_DELAY_MS = 300;
 
   record Snapshot(boolean darkMode, int pageSize, boolean automaticCompletion,
-                  int completionDelayMs, int sqlFontSize, int resultFilterDelayMs) {
+                  int completionDelayMs, int sqlFontSize, int resultFilterDelayMs,
+                  boolean allowWrites) {
+    Snapshot(boolean darkMode, int pageSize, boolean automaticCompletion,
+             int completionDelayMs, int sqlFontSize, int resultFilterDelayMs) {
+      this(darkMode, pageSize, automaticCompletion, completionDelayMs, sqlFontSize,
+          resultFilterDelayMs, false);
+    }
     Snapshot {
       validatePageSize(pageSize);
       if (completionDelayMs < 150 || completionDelayMs > 2000)
@@ -50,7 +56,7 @@ final class LinkSqlSettings {
 
   static Snapshot snapshot() {
     return new Snapshot(darkMode(), pageSize(), automaticCompletion(),
-        completionDelayMs(), sqlFontSize(), resultFilterDelayMs());
+        completionDelayMs(), sqlFontSize(), resultFilterDelayMs(), allowWrites());
   }
 
   static void save(Snapshot value) {
@@ -61,7 +67,9 @@ final class LinkSqlSettings {
     PREFS.putInt("completionDelayMs", value.completionDelayMs());
     PREFS.putInt("sqlFontSize", value.sqlFontSize());
     PREFS.putInt("resultFilterDelayMs", value.resultFilterDelayMs());
-    // Ignora e remove a opcao antiga: a contagem federada e sempre ativa.
+    PREFS.putBoolean("allowWrites", value.allowWrites());
+    // Contagem sempre ativa; descarta preferencias antigas que podiam desliga-la.
+    PREFS.remove("countFederatedV4");
     PREFS.remove("countFederated");
   }
 
@@ -80,6 +88,7 @@ final class LinkSqlSettings {
   static boolean darkMode() { return PREFS.getBoolean("darkMode", true); }
   static void setDarkMode(boolean dark) { PREFS.putBoolean("darkMode", dark); }
   static boolean automaticCompletion() { return PREFS.getBoolean("automaticCompletion", true); }
+  static boolean allowWrites() { return PREFS.getBoolean("allowWrites", false); }
   static int completionDelayMs() {
     return clamp(PREFS.getInt("completionDelayMs", DEFAULT_COMPLETION_DELAY_MS), 150, 2000);
   }

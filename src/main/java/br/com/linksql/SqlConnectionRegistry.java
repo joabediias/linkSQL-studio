@@ -75,6 +75,8 @@ final class SqlConnectionRegistry {
     ds.setUrl(profile.resolvedJdbcUrl());
     ds.setUsername(profile.user());
     ds.setPassword(password);
+    if (profile.type() == SqlDatabaseType.MYSQL)
+      ds.addConnectionProperty("useCursorFetch", "true");
     // Calcite pode requisitar conexoes simultaneas para metadados e etapas
     // de subconsultas/JOINS na mesma origem. As conexoes sao abertas sob demanda.
     // Um limite de 2 provocava exaustao do pool em consultas com 4+ fontes.
@@ -160,6 +162,7 @@ final class SqlConnectionRegistry {
 
   private static void addCalciteSchema(SchemaPlus schemas, JdbcConnectionProfile profile,
                                        BasicDataSource ds) {
+    javax.sql.DataSource streaming = new FederatedStreamingDataSource(ds, profile.type());
     String catalog = switch (profile.type()) {
       case SQLSERVER, POSTGRESQL -> profile.database();
       default -> null;
@@ -168,11 +171,11 @@ final class SqlConnectionRegistry {
     // Firebird precisa respeitar o dialeto da origem. FIRST/SKIP funciona
     // inclusive nas versoes antigas que nao aceitam OFFSET/FETCH.
     if (profile.type() == SqlDatabaseType.FIREBIRD) {
-      schemas.add(profile.name(), JdbcSchema.create(schemas, profile.name(), ds,
+      schemas.add(profile.name(), JdbcSchema.create(schemas, profile.name(), streaming,
           FirebirdCompatDialect.FACTORY, catalog, profile.schemaForCalcite()));
     } else {
       // Mesmo caminho da versao 2.6: nenhuma alteracao nos outros fornecedores.
-      schemas.add(profile.name(), JdbcSchema.create(schemas, profile.name(), ds,
+      schemas.add(profile.name(), JdbcSchema.create(schemas, profile.name(), streaming,
           catalog, profile.schemaForCalcite()));
     }
   }

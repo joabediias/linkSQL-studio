@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WixLocalization Culture="pt-BR" Codepage="1252" xmlns="http://schemas.microsoft.com/wix/2006/localization">
+  <String Id="LinkSQL_DowngradeErrorMessage">Já existe uma versão mais recente do [ProductName] instalada.</String>
+  <String Id="LinkSQL_DisallowUpgradeErrorMessage">Não é possível atualizar esta instalação com o pacote selecionado.</String>
+  <String Id="LinkSQL_MainFeatureTitle">LinkSQL Studio</String>
+  <String Id="LinkSQL_message.install.dir.exist">A pasta [INSTALLDIR] já existe. Deseja instalar o LinkSQL nessa pasta?</String>
+  <String Id="LinkSQL_ShortcutPromptDlg_Title">Instalação do [ProductName]</String>
+  <String Id="LinkSQL_ShortcutPromptDlgTitle">{\WixUI_Font_Title}Atalhos</String>
+  <String Id="LinkSQL_ShortcutPromptDlgBannerBitmap">WixUI_Bmp_Banner</String>
+  <String Id="LinkSQL_ShortcutPromptDlgDescription">Selecione os atalhos que deseja criar.</String>
+  <String Id="LinkSQL_ShortcutPromptDlgDesktopShortcutControlLabel">Criar atalho na área de trabalho</String>
+  <String Id="LinkSQL_ShortcutPromptDlgStartMenuShortcutControlLabel">Criar atalho no menu Iniciar</String>
+  <String Id="LinkSQL_InstallDirNotEmptyDlg_Title">Instalação do [ProductName]</String>
+</WixLocalization>

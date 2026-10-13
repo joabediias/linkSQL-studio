@@ -12,8 +12,8 @@ final class LinkSqlWorkspaceChrome {
     LinkSqlVisualStyle.surfacePanel(header, "header");
     JPanel brand = new JPanel(new BorderLayout(10, 0));
     brand.setOpaque(false);
-    JLabel logo = new JLabel(LinkSqlVisualStyle.icon("database", LinkSqlVisualStyle.accent(), 28));
-    logo.putClientProperty("linksql.iconName", "database");
+    JLabel logo = new JLabel(LinkSqlAppIcon.icon(36));
+    logo.getAccessibleContext().setAccessibleName("Logo do LinkSQL Studio");
     brand.add(logo, BorderLayout.WEST);
     JPanel words = new JPanel(new GridLayout(2, 1));
     words.setOpaque(false);
@@ -25,10 +25,14 @@ final class LinkSqlWorkspaceChrome {
     words.add(LinkSqlVisualStyle.hint("SQL nativo e federado"));
     brand.add(words, BorderLayout.CENTER);
     header.add(brand, BorderLayout.WEST);
-    JPanel actions = LinkSqlVisualStyle.actionRow(FlowLayout.RIGHT);
+    // A barra principal sempre ocupa uma linha, inclusive na primeira troca de tema.
+    JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+    actions.setOpaque(false);
+    Dimension themeSize = theme.getPreferredSize();
+    theme.setPreferredSize(new Dimension(Math.max(150, themeSize.width + 12), themeSize.height));
     actions.add(open);
     actions.add(newTab);
-    actions.add(LinkSqlVisualStyle.smallLabel("3.4.4"));
+    actions.add(LinkSqlVisualStyle.smallLabel("4.0.0"));
     actions.add(theme);
     header.add(actions, BorderLayout.EAST);
     return header;

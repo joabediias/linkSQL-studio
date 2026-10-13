@@ -141,7 +141,8 @@ final class LinkSqlVisualStyle {
     UIManager.put("CheckBox.background", surface());
     UIManager.put("CheckBox.foreground", text());
     UIManager.put("MenuBar.background", toolbarSurface());
-    UIManager.put("MenuBar.foreground", subtleText());
+    UIManager.put("MenuBar.foreground", dark ? Color.WHITE : text());
+    UIManager.put("MenuBar.selectionForeground", dark ? Color.WHITE : text());
     UIManager.put("Menu.background", surface());
     UIManager.put("Menu.foreground", text());
     UIManager.put("MenuItem.background", surface());
@@ -268,7 +269,8 @@ final class LinkSqlVisualStyle {
       button.putClientProperty("JButton.buttonType", "toolBarButton");
     }
     if (!"null".equals(glyph)) {
-      button.setIcon(icon(glyph, primary ? primaryText() : danger ? button.getForeground() : "muted".equals(variant) ? subtleText() : accent(), 17));
+      int glyphSize = "sun".equals(glyph) || "moon".equals(glyph) ? 20 : 17;
+      button.setIcon(icon(glyph, primary ? primaryText() : danger ? button.getForeground() : "muted".equals(variant) ? subtleText() : accent(), glyphSize));
       button.setIconTextGap(7);
     }
   }
@@ -560,8 +562,27 @@ final class LinkSqlVisualStyle {
             g.drawLine(3, 5, 17, 5); g.drawLine(3, 10, 17, 10); g.drawLine(3, 15, 17, 15);
             g.fillOval(6, 3, 4, 4); g.fillOval(12, 8, 4, 4); g.fillOval(5, 13, 4, 4);
           }
-          case "moon" -> { g.drawArc(4, 2, 13, 16, 90, 230); g.drawArc(8, 0, 9, 16, 60, 210); }
-          case "sun" -> { g.drawOval(6, 6, 8, 8); g.drawLine(10, 1, 10, 4); g.drawLine(10, 16, 10, 19); g.drawLine(1, 10, 4, 10); g.drawLine(16, 10, 19, 10); }
+          case "moon" -> {
+            // Uma única silhueta fechada evita as pontas cruzadas dos dois arcos.
+            Path2D moon = new Path2D.Double();
+            moon.moveTo(17.5, 10.7);
+            moon.curveTo(17.1, 14.4, 14.0, 17.3, 10.2, 17.3);
+            moon.curveTo(6.1, 17.3, 2.8, 14.0, 2.8, 9.9);
+            moon.curveTo(2.8, 6.1, 5.7, 3.0, 9.4, 2.6);
+            moon.curveTo(7.9, 5.0, 8.2, 8.1, 10.2, 10.1);
+            moon.curveTo(12.2, 12.1, 15.1, 12.4, 17.5, 10.7);
+            moon.closePath();
+            g.draw(moon);
+          }
+          case "sun" -> {
+            g.draw(new Ellipse2D.Double(6.5, 6.5, 7, 7));
+            for (int ray = 0; ray < 8; ray++) {
+              double angle = ray * Math.PI / 4;
+              double dx = Math.cos(angle), dy = Math.sin(angle);
+              g.draw(new Line2D.Double(10 + dx * 6.3, 10 + dy * 6.3,
+                  10 + dx * 8.5, 10 + dy * 8.5));
+            }
+          }
           case "code" -> { g.drawLine(8, 3, 3, 10); g.drawLine(3, 10, 8, 17); g.drawLine(12, 3, 17, 10); g.drawLine(17, 10, 12, 17); }
           case "history" -> { g.drawArc(3, 3, 14, 14, 20, 290); g.drawLine(10, 6, 10, 10); g.drawLine(10, 10, 13, 12); }
           default -> g.drawRoundRect(3, 3, 14, 14, 3, 3);

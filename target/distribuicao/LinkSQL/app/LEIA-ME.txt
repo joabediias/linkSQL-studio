@@ -1,8 +1,0 @@
-﻿LinkSQL 3.4.4
-- O arquivo de conexoes da versao instalada fica em:
-  %USERPROFILE%\.linksql\config\connections.json
-- Configure suas conexoes pelo menu Conexoes > Gerenciar conexoes.
-- As conexoes sao abertas sob demanda; a senha e solicitada no primeiro
-  uso se nao houver credencial DPAPI valida ou variavel de ambiente.
-- Senhas lembradas ficam protegidas pelo Windows, nao em texto puro no JSON.
-- Historico, sessoes, preferencias e logs continuam no perfil do usuario.

@@ -157,6 +157,11 @@ public class Main {
     if (direct == null) return sql;
     return directPageSql(direct, sqlWindow(sql), 0, size);
   }
+  private static boolean isPageableSql(String sql) {
+    try { ReadOnlySqlGuard.requireReadOnlySelect(sql); }
+    catch (SQLException ex) { return false; }
+    return SqlQueryPlanner.isPageableSql(sql);
+  }
   private static NativeSqlRouter.Route nativeRoute(String sql, String tabAlias) {
     return SqlTabRouting.route(sql, tabAlias, CONNECTIONS.allProfiles());
   }
@@ -214,7 +219,7 @@ public class Main {
     DirectSql direct = directSql(sql);
     NativeSqlRouter.Route nativeCount = direct == null ? nativeRoute(sql, tabAlias) : null;
     boolean federated = direct == null && nativeCount == null;
-    // Contagem federada sempre ativa, sem depender de preferencia antiga do usuario.
+    // A contagem total fica sempre ativa, sem depender de preferencias antigas.
     boolean allowed = isPageableSql(sql);
     scroll.putClientProperty("countUnavailable", false);
     scroll.putClientProperty("countPending", false);
@@ -390,8 +395,18 @@ public class Main {
       }
       LinkSqlVisualStyle.button(themeButton, darkMode ? "Tema claro" : "Tema escuro",
           darkMode ? "sun" : "moon", "quiet");
+      refreshMenuText();
+      frame.revalidate();
       frame.repaint();
     } catch (Exception ex) { showError(ex); }
+  }
+
+  private static void refreshMenuText() {
+    if (frame == null || frame.getJMenuBar() == null) return;
+    Color foreground = darkMode ? Color.WHITE : LinkSqlVisualStyle.text();
+    frame.getJMenuBar().setForeground(foreground);
+    for (int i = 0; i < frame.getJMenuBar().getMenuCount(); i++)
+      frame.getJMenuBar().getMenu(i).setForeground(foreground);
   }
 
   private static void openSettings() {
@@ -465,7 +480,7 @@ public class Main {
   }
 
   private static void createUi() {
-    frame = new JFrame("LinkSQL Studio — 3.4.4");
+    frame = new JFrame("LinkSQL Studio — 4.0.0");
     LinkSqlAppIcon.apply(frame);
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
@@ -523,6 +538,13 @@ public class Main {
     JMenuBar menuBar = new JMenuBar();
     JMenu fileMenu = new JMenu("Arquivo");
     addMenuAction(fileMenu, "Nova aba SQL", newTab);
+    fileMenu.getItem(0).setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_F5, 0));
+    frame.getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(
+        KeyStroke.getKeyStroke(KeyEvent.VK_F5, 0), "linksql.newSqlTab");
+    frame.getRootPane().getActionMap().put("linksql.newSqlTab", new AbstractAction() {
+      @Override public void actionPerformed(ActionEvent e) { newTab.doClick(); }
+    });
+    newTab.setToolTipText("Nova aba SQL (F5)");
     addMenuAction(fileMenu, "Abrir SQL", openSql);
     addMenuAction(fileMenu, "Salvar SQL", saveSql);
     addMenuAction(fileMenu, "Fechar aba", closeTab);
@@ -567,6 +589,9 @@ public class Main {
     JMenuItem importProfiles = new JMenuItem("Importar perfis de arquivo");
     importProfiles.addActionListener(e -> chooseAndLoad());
     connectionsMenu.add(importProfiles);
+    JMenuItem exportProfiles = new JMenuItem("Exportar perfis de conexão");
+    exportProfiles.addActionListener(e -> exportConnectionProfiles());
+    connectionsMenu.add(exportProfiles);
     addMenuAction(connectionsMenu, "Gerenciar conexoes", manage);
     addMenuAction(connectionsMenu, "Buscar coluna", searchColumns);
     JMenuItem structure = new JMenuItem("Estrutura da tabela selecionada");
@@ -599,6 +624,7 @@ public class Main {
     menuBar.add(viewMenu);
     for (int i = 0; i < menuBar.getMenuCount(); i++) LinkSqlVisualStyle.popup(menuBar.getMenu(i).getPopupMenu());
     frame.setJMenuBar(menuBar);
+    refreshMenuText();
 
     rootNode = new DefaultMutableTreeNode("Conexões SQL");
     explorer = new JTree(rootNode);
@@ -1690,6 +1716,28 @@ public class Main {
     return (JTextArea) pane.getViewport().getView();
   }
 
+  private static void exportConnectionProfiles() {
+    JFileChooser chooser = new JFileChooser();
+    chooser.setDialogTitle("Exportar conexões sem senhas");
+    chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Perfis de conexão (*.json)", "json"));
+    chooser.setSelectedFile(new File("LinkSQL-conexoes.json"));
+    if (chooser.showSaveDialog(frame) != JFileChooser.APPROVE_OPTION) return;
+    Path target = chooser.getSelectedFile().toPath().toAbsolutePath().normalize();
+    if (!target.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json"))
+      target = target.resolveSibling(target.getFileName() + ".json");
+    try {
+      if (target.equals(configPath.toAbsolutePath().normalize())
+          || Files.exists(target) && Files.isSameFile(target, configPath))
+        throw new IOException("Escolha outro arquivo para exportar os perfis.");
+      if (Files.exists(target) && JOptionPane.showConfirmDialog(frame,
+          "Substituir o arquivo " + target.getFileName() + "?", "Exportar conexões",
+          JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
+      ConnectionProfileTransfer.export(target, CONNECTIONS.allProfiles());
+      status.setText(" Perfis exportados sem senhas: " + target.getFileName());
+      JOptionPane.showMessageDialog(frame, "Conexões exportadas sem senhas. No outro usuário, use Conexões > Importar perfis de arquivo.");
+    } catch (Exception ex) { showError(ex); }
+  }
+
   private static void chooseAndLoad() {
     JFileChooser chooser = new JFileChooser();
     chooser.setDialogTitle("Importar perfis de conexão (senhas não são importadas)");
@@ -1707,12 +1755,7 @@ public class Main {
       for (JsonNode item : imported.path("connections")) {
         JdbcConnectionProfile profile = JdbcConnectionProfile.fromJson(item);
         if (known.add(profile.name().toUpperCase(Locale.ROOT))) {
-          ObjectNode safe = JSON.createObjectNode();
-          safe.put("name", profile.name()); safe.put("type", profile.type().name());
-          safe.put("host", profile.host()); safe.put("port", profile.port());
-          safe.put("database", profile.database()); safe.put("schema", profile.schema());
-          safe.put("user", profile.user()); safe.put("passwordEnv", profile.passwordEnv());
-          safe.put("jdbcUrl", profile.jdbcUrl()); safe.put("readOnly", profile.readOnly());
+          ObjectNode safe = ConnectionProfileTransfer.profile(profile);
           list.add(safe); count++;
         }
       }
@@ -1728,6 +1771,7 @@ public class Main {
   private static void loadConfiguration() {
     try {
       configure(configPath);
+      releaseOtherCursors(null);
       // Importações de perfis também devem aparecer no JDBC 0.5 já instalado.
       LinkSqlPaths.mirrorForJdbc05(configPath);
       rebuildTree();
@@ -2171,9 +2215,34 @@ public class Main {
     updatePageControls();
   }
 
+  private static void releaseResult(Component component) {
+    if (component instanceof JScrollPane scroll) {
+      releaseCursor(scroll);
+      scroll.putClientProperty("countTicket", new Object());
+      scroll.putClientProperty("countPending", false);
+    }
+  }
+  private static void releaseCursor(JScrollPane scroll) {
+    Object cursor = scroll.getClientProperty("federatedCursor");
+    scroll.putClientProperty("federatedCursor", null);
+    if (cursor instanceof FederatedResultCursor c) c.closeAsync();
+  }
+  private static void releaseOtherCursors(Component keep) {
+    if (resultTabs == null) return;
+    for (int i = 0; i < resultTabs.getTabCount(); i++) {
+      Component result = resultTabs.getComponentAt(i);
+      if (result != keep && result instanceof JScrollPane scroll) {
+        Object cursor = scroll.getClientProperty("federatedCursor");
+        scroll.putClientProperty("federatedCursor", null);
+        if (cursor instanceof FederatedResultCursor c) c.closeAsync();
+      }
+    }
+  }
+
   private static void clearSelectedResult() {
     int index = resultTabs.getSelectedIndex();
     if (index < 0) { status.setText(" Nenhum resultado para fechar."); return; }
+    releaseResult(resultTabs.getComponentAt(index));
     resultTabs.removeTabAt(index);
     selectResultTab();
     status.setText(" Aba de resultados fechada.");
@@ -2200,12 +2269,18 @@ public class Main {
     updatePageControls();
   }
 
-  // A aba de resultado representa a posicao do SELECT na execucao, nao o texto SQL.
+  // A aba de resultado representa a posicao do comando na execucao, nao o texto SQL.
   private static void showOrUpdateResultTab(DefaultTableModel model, double elapsed, Component sqlTab,
                                              String sql, int slot, int pageSize, String tabAlias) {
+    showOrUpdateResultTab(model, elapsed, sqlTab, sql, slot, pageSize, tabAlias, null);
+  }
+
+  private static void showOrUpdateResultTab(DefaultTableModel model, double elapsed, Component sqlTab,
+      String sql, int slot, int pageSize, String tabAlias, FederatedResultCursor cursor) {
     JScrollPane scroll;
     if (slot < resultTabs.getTabCount() && resultTabs.getComponentAt(slot) instanceof JScrollPane existing) {
       scroll = existing;
+      releaseResult(scroll);
     } else {
       JTable table = newResultTable(model);
       scroll = new JScrollPane(table);
@@ -2213,10 +2288,13 @@ public class Main {
     }
     JTable table = newResultTable(model);
     scroll.setViewportView(table);
+    scroll.setColumnHeaderView(table.getTableHeader());
+    scroll.putClientProperty("commandFeedback", null);
     scroll.putClientProperty("resultSummary", String.format(Locale.ROOT,
         "  RESULTADOS  ·  %s linhas  ·  %.2f s", formatRowCount(model.getRowCount()), elapsed));
     scroll.putClientProperty("resultFilter", "");
     scroll.putClientProperty("resultFilterColumn", 0);
+    scroll.putClientProperty("federatedCursor", cursor);
     scroll.putClientProperty("sqlSourceTab", sqlTab);
     scroll.putClientProperty("sqlDefaultSource", tabAlias);
     scroll.putClientProperty("sqlQueryKey", sql.trim());
@@ -2238,14 +2316,52 @@ public class Main {
     selectResultTab();
   }
 
+  private static String affectedRowsText(int affected) {
+    return affected >= 0 ? formatRowCount(affected) + " registro(s) afetado(s)"
+        : "Quantidade de registros não informada pelo banco";
+  }
+
+  private static DefaultTableModel commandResultModel(String source, int affected, double elapsed) {
+    return new DefaultTableModel(new Object[][]{{"Concluído com sucesso", source,
+        affected >= 0 ? formatRowCount(affected) : "Não informado pelo banco",
+        String.format(DISPLAY_LOCALE, "%.2f s", elapsed)}},
+        new Object[]{"Status", "Conexão", "Registros afetados", "Tempo"}) {
+      @Override public boolean isCellEditable(int row, int column) { return false; }
+    };
+  }
+
+  // O executor retorna apenas depois do commit; nunca paginar ou reexecutar escrita.
+  private static void showWriteResult(SqlWriteExecutor.Result result, double elapsed, Component sqlTab,
+      String sql, int slot, String source, String tabAlias) {
+    DefaultTableModel model = result.model() != null ? result.model()
+        : commandResultModel(source, result.affected(), elapsed);
+    showOrUpdateResultTab(model, elapsed, sqlTab, sql, slot, 0, tabAlias);
+    JScrollPane scroll = (JScrollPane) resultTabs.getComponentAt(slot);
+    String feedback = "Comando concluído";
+    scroll.putClientProperty("commandFeedback", feedback);
+    scroll.putClientProperty("resultSummary", "  COMANDO CONCLUÍDO  ·  " + source + "  ·  "
+        + affectedRowsText(result.affected()) + (result.model() != null
+            ? "  ·  " + formatRowCount(model.getRowCount()) + " linha(s) retornada(s)" : ""));
+    String title = "Comando " + (slot + 1) + " — OK";
+    resultTabs.setTitleAt(slot, title);
+    resultTabs.setTabComponentAt(slot, resultTabHeader(title, scroll));
+    selectResultTab();
+  }
+
   private static void trimResultTabs(int count) {
-    while (resultTabs.getTabCount() > count) resultTabs.removeTabAt(resultTabs.getTabCount() - 1);
+    while (resultTabs.getTabCount() > count) {
+      int last = resultTabs.getTabCount() - 1;
+      releaseResult(resultTabs.getComponentAt(last));
+      resultTabs.removeTabAt(last);
+    }
     selectResultTab();
   }
 
   // Troca o tamanho da página preservando a preferência, com proteção para "Todas".
   private static void changeRowsPerPage() {
     if (updatingPageSizeBox || pageSizeBox == null) return;
+    if (resultTabs.getSelectedComponent() instanceof JScrollPane feedback
+        && feedback.getClientProperty("commandFeedback") != null) return;
     String label = String.valueOf(pageSizeBox.getSelectedItem()).trim();
     int chosen;
     if (label.toLowerCase(Locale.ROOT).startsWith("todas")) chosen = 0;
@@ -2283,6 +2399,7 @@ public class Main {
     preferredPageSize = chosen;
     LinkSqlSettings.setPageSize(chosen);
     if (scroll != null && resultTabs.indexOfComponent(scroll) >= 0 && resultPageSize(scroll) != chosen) {
+      releaseCursor(scroll);
       scroll.putClientProperty("pageSize", chosen);
       // O SQL nao mudou: preserva a contagem em andamento ao alterar o tamanho de pagina.
       scroll.putClientProperty("pageCache", null);
@@ -2301,6 +2418,7 @@ public class Main {
     JScrollPane scroll = selected instanceof JScrollPane p ? p : null;
     int size = scroll == null ? preferredPageSize : resultPageSize(scroll);
     if (pageSizeBox != null) {
+      pageSizeBox.setEnabled(scroll == null || scroll.getClientProperty("commandFeedback") == null);
       updatingPageSizeBox = true;
       try { pageSizeBox.setSelectedItem(formatPageSize(size)); }
       finally { updatingPageSizeBox = false; }
@@ -2309,6 +2427,12 @@ public class Main {
       previousPageButton.setEnabled(false);
       nextPageButton.setEnabled(false);
       pageLabel.setText("Nenhum resultado");
+      return;
+    }
+    if (scroll.getClientProperty("commandFeedback") instanceof String feedback) {
+      previousPageButton.setEnabled(false);
+      nextPageButton.setEnabled(false);
+      pageLabel.setText(feedback);
       return;
     }
     Object value = scroll.getClientProperty("resultPage");
@@ -2343,7 +2467,7 @@ public class Main {
       if (page + 1 >= maxPages) nextPageButton.setEnabled(false);
     } else {
       pageLabel.setText("Página " + (page + 1) + " · " +
-          (Boolean.TRUE.equals(scroll.getClientProperty("countPending")) ? "calculando total..." : (Boolean.TRUE.equals(scroll.getClientProperty("countUnavailable")) ? "contagem indisponível" : "total não disponível")));
+          (Boolean.TRUE.equals(scroll.getClientProperty("countPending")) ? "calculando total..." : (Boolean.TRUE.equals(scroll.getClientProperty("countUnavailable")) ? "contagem indisponível" : "total ao concluir a leitura")));
     }
   }
 
@@ -2361,6 +2485,7 @@ public class Main {
   }
 
   private static void loadResultPage(JScrollPane scroll, int target) {
+    if (scroll.getClientProperty("commandFeedback") != null) return;
     if (currentQuery != null && !currentQuery.isDone()) return;
     if (resultTabs.indexOfComponent(scroll) < 0) return;
     Object original = scroll.getClientProperty("sqlQueryKey");
@@ -2381,6 +2506,8 @@ public class Main {
       status.setText(" Página " + (target + 1) + " carregada.");
       return;
     }
+    releaseOtherCursors(scroll);
+    final Object previousCursor = scroll.getClientProperty("federatedCursor");
     // A consulta original e encapsulada para preservar WHERE, ORDER BY e limites declarados.
     DirectSql directPage = directSql(sql);
     String tabAlias = (String) scroll.getClientProperty("sqlDefaultSource");
@@ -2404,10 +2531,28 @@ public class Main {
     status.setText(" Carregando página " + (target + 1) + "...");
     long started = System.nanoTime();
     currentQuery = new SwingWorker<DefaultTableModel, Void>() {
+      private FederatedResultCursor cursor;
       protected DefaultTableModel doInBackground() throws Exception {
         Connection conn = null;
         Statement stmt = null;
         try {
+          if (nativePage == null && directPage == null && size > 0) {
+            Object previous = previousCursor;
+            cursor = previous instanceof FederatedResultCursor c && c.canRead(target) ? c : null;
+            if (cursor == null) {
+              if (previous instanceof FederatedResultCursor c) c.closeAsync();
+              cursor = FederatedResultCursor.open(() -> openQueryConnection(sql), sql,
+                  c -> { if (currentQuery == this) RUNNING_CONNECTION.set(c); },
+                  st -> { if (currentQuery == this) RUNNING_STATEMENT.set(st); }, this::isCancelled);
+              for (int page = 0; page < target; page++) {
+                if (cursor.read(page, size, this::isCancelled).getRowCount() < size)
+                  throw new SQLException("O resultado mudou. Execute a consulta novamente.");
+              }
+            }
+            conn = cursor.connection(); stmt = cursor.statement();
+            if (currentQuery == this) { RUNNING_CONNECTION.set(conn); RUNNING_STATEMENT.set(stmt); }
+            return cursor.read(target, size, this::isCancelled);
+          }
           conn = nativePage != null ? CONNECTIONS.source(nativePage.source()).getConnection()
               : directPage != null ? CONNECTIONS.source(directPage.source()).getConnection() : openQueryConnection(sql);
           stmt = conn.createStatement();
@@ -2429,20 +2574,24 @@ public class Main {
         } finally {
           RUNNING_STATEMENT.compareAndSet(stmt, null);
           RUNNING_CONNECTION.compareAndSet(conn, null);
-          if (stmt != null) try { stmt.close(); } catch (SQLException ignored) {}
-          if (conn != null) try { conn.close(); } catch (SQLException ignored) {}
+          if (cursor != null && isCancelled()) cursor.closeAsync();
+          if (cursor == null && stmt != null) try { stmt.close(); } catch (SQLException ignored) {}
+          if (cursor == null && conn != null) try { conn.close(); } catch (SQLException ignored) {}
         }
       }
       protected void done() {
-        if (currentQuery != this) return;
+        if (currentQuery != this) { if (cursor != null) cursor.closeAsync(); return; }
         execute.setEnabled(true);
         executeScriptButton.setEnabled(true);
         cancelQueryButton.setEnabled(false);
         try {
           DefaultTableModel model = get();
-          if (resultTabs.indexOfComponent(scroll) < 0) return;
+          if (resultTabs.indexOfComponent(scroll) < 0) { if (cursor != null) cursor.closeAsync(); return; }
+          scroll.putClientProperty("federatedCursor", cursor);
           if (target > 0 && model.getRowCount() == 0) {
             scroll.putClientProperty("resultHasMore", false);
+            Long total = SqlPageTotals.whenExhausted(target, size, 0);
+            if (total != null) scroll.putClientProperty("totalRows", total);
             status.setText(" Não há mais registros após a página " + (current + 1) + ".");
             return;
           }
@@ -2451,6 +2600,7 @@ public class Main {
           displayPage(scroll, model, target, seconds, false);
           status.setText(" Página " + (target + 1) + " carregada.");
         } catch (Exception ex) {
+          if (cursor != null) cursor.closeAsync();
           if (CANCEL_REQUESTED.get()) status.setText(" Paginação cancelada.");
           else { status.setText(" Erro ao carregar página. Resultado anterior preservado."); showError(ex); }
         } finally { updatePageControls(); }
@@ -2507,7 +2657,7 @@ public class Main {
     close.setFocusable(false);
     close.addActionListener(e -> {
       int index = resultTabs.indexOfComponent(content);
-      if (index >= 0) resultTabs.removeTabAt(index);
+      if (index >= 0) { releaseResult(content); resultTabs.removeTabAt(index); }
       selectResultTab();
     });
     header.add(label);
@@ -2530,6 +2680,46 @@ public class Main {
     status.setText(" SQL formatado. Atalho: Ctrl+Shift+F.");
   }
 
+  private static void runWriteCommand(String sql, NativeSqlRouter.Route route, Component sqlTab, String tabAlias) {
+    releaseOtherCursors(null);
+    final int pageSize = preferredPageSize;
+    rememberQuery(sql);
+    execute.setEnabled(false); executeScriptButton.setEnabled(false); cancelQueryButton.setEnabled(true);
+    CANCEL_REQUESTED.set(false);
+    status.setText(" Executando comando em " + route.source() + "...");
+    long started = System.nanoTime();
+    currentQuery = new SwingWorker<SqlWriteExecutor.Result, Void>() {
+      protected SqlWriteExecutor.Result doInBackground() throws Exception {
+        Connection connection = null;
+        try {
+          connection = CONNECTIONS.source(route.source()).getConnection();
+          if (currentQuery == this) RUNNING_CONNECTION.set(connection);
+          return SqlWriteExecutor.execute(connection, route.sql(), pageSize, this::isCancelled,
+              st -> { if (currentQuery == this) RUNNING_STATEMENT.set(st); });
+        } finally {
+          RUNNING_CONNECTION.compareAndSet(connection, null);
+          if (connection != null) try { connection.close(); } catch (SQLException ignored) {}
+        }
+      }
+      protected void done() {
+        if (currentQuery != this) return;
+        RUNNING_STATEMENT.set(null);
+        execute.setEnabled(true); executeScriptButton.setEnabled(true); cancelQueryButton.setEnabled(false);
+        try {
+          SqlWriteExecutor.Result result = get();
+          showWriteResult(result, (System.nanoTime() - started) / 1e9, sqlTab, sql, 0, route.source(), tabAlias);
+          trimResultTabs(1);
+          status.setText(" Comando concluído em " + route.source() + (result.affected() >= 0
+              ? ": " + formatRowCount(result.affected()) + " registro(s) afetado(s)." : "."));
+        } catch (Exception ex) {
+          if (CANCEL_REQUESTED.get()) status.setText(" Cancelamento solicitado. Confira no banco o estado do comando.");
+          else { status.setText(" Falha no comando. Confira os detalhes do banco."); showError(ex); }
+        }
+      }
+    };
+    currentQuery.execute();
+  }
+
   private static void runQuery() {
     JTextArea queryEditor = activeEditor();
     if (federation == null) { status.setText(" Cadastre uma conexão primeiro."); queryEditor.requestFocusInWindow(); return; }
@@ -2547,6 +2737,10 @@ public class Main {
           + ". Escolha outra conexão ou o modo Federado."));
       return;
     }
+    NativeSqlRouter.Route write;
+    try { write = SqlExecutionPolicy.writeRoute(query, LinkSqlSettings.allowWrites(), tabAlias, CONNECTIONS.allProfiles()); }
+    catch (SQLException ex) { showError(ex); return; }
+    if (write != null) { runWriteCommand(query, write, sqlTab, tabAlias); return; }
     try { FederatedQuerySupport.validate(query, CONNECTIONS.allProfiles()); }
     catch (SQLException ex) { showError(ex); return; }
     final NativeSqlRouter.Route nativeQuery = nativeRoute(query, tabAlias);
@@ -2558,6 +2752,7 @@ public class Main {
     catch (SQLException ex) { showError(ex); return; }
     final int pageSize = preferredPageSize;
     rememberQuery(query);
+    releaseOtherCursors(null);
     execute.setEnabled(false);
     executeScriptButton.setEnabled(false);
     cancelQueryButton.setEnabled(true);
@@ -2566,10 +2761,22 @@ public class Main {
     status.setText(" Executando consulta...");
     final long[] phases = new long[3]; // conexão, execução SQL, leitura
     currentQuery = new SwingWorker<DefaultTableModel, Void>() {
+      private FederatedResultCursor cursor;
       protected DefaultTableModel doInBackground() throws Exception {
         Connection queryConnection = null;
         Statement stmt = null;
         try {
+          if (nativeQuery == null && directSql(query) == null && pageSize > 0 && isPageableSql(query)) {
+            cursor = FederatedResultCursor.open(() -> openQueryConnection(query), query,
+                c -> { if (currentQuery == this) RUNNING_CONNECTION.set(c); phases[0] = System.nanoTime() - started; },
+                st -> { if (currentQuery == this) RUNNING_STATEMENT.set(st); }, this::isCancelled);
+            queryConnection = cursor.connection(); stmt = cursor.statement();
+            phases[1] = System.nanoTime() - started - phases[0];
+            long readStarted = System.nanoTime();
+            DefaultTableModel model = cursor.read(0, pageSize, this::isCancelled);
+            phases[2] = System.nanoTime() - readStarted;
+            return model;
+          }
           queryConnection = queryConnectionFor(query, tabAlias);
           stmt = queryConnection.createStatement();
           phases[0] = System.nanoTime() - started;
@@ -2600,23 +2807,24 @@ public class Main {
         } finally {
           RUNNING_STATEMENT.compareAndSet(stmt, null);
           RUNNING_CONNECTION.compareAndSet(queryConnection, null);
-          if (stmt != null) {
+          if (cursor != null && isCancelled()) cursor.closeAsync();
+          if (cursor == null && stmt != null) {
             try { stmt.close(); } catch (SQLException ignored) {}
           }
-          if (queryConnection != null) {
+          if (cursor == null && queryConnection != null) {
             try { queryConnection.close(); } catch (SQLException ignored) {}
           }
         }
       }
       protected void done() {
-        if (currentQuery != this) return;
+        if (currentQuery != this) { if (cursor != null) cursor.closeAsync(); return; }
         execute.setEnabled(true);
         executeScriptButton.setEnabled(true);
         cancelQueryButton.setEnabled(false);
         try {
           DefaultTableModel model = get();
           double elapsed = (System.nanoTime() - started) / 1_000_000_000.0;
-          showOrUpdateResultTab(model, elapsed, sqlTab, query, 0, pageSize, tabAlias);
+          showOrUpdateResultTab(model, elapsed, sqlTab, query, 0, pageSize, tabAlias, cursor);
           trimResultTabs(1);
           String details = String.format(Locale.ROOT,
               "Conexão %.2f s | SQL %.2f s | Leitura %.2f s",
@@ -2626,6 +2834,7 @@ public class Main {
               + " | " + executionLabel(query, tabAlias));
           status.setToolTipText(details + " | " + executionLabel(query, tabAlias));
         } catch (Exception ex) {
+          if (cursor != null) cursor.closeAsync();
           if (CANCEL_REQUESTED.get()) status.setText(" Consulta cancelada. Resultados anteriores preservados.");
           else { status.setText(" Falha na consulta. Resultados anteriores preservados."); showError(ex); }
         }
@@ -2673,18 +2882,37 @@ public class Main {
       cancelQueryButton.setEnabled(false);
       return;
     }
+    final List<NativeSqlRouter.Route> writes = new ArrayList<>();
+    try {
+      for (String command : commands)
+        writes.add(SqlExecutionPolicy.writeRoute(command, LinkSqlSettings.allowWrites(), tabAlias, CONNECTIONS.allProfiles()));
+    } catch (SQLException ex) {
+      execute.setEnabled(true); executeScriptButton.setEnabled(true); cancelQueryButton.setEnabled(false);
+      showError(ex); return;
+    }
     final int pageSize = preferredPageSize;
+    releaseOtherCursors(null);
     currentQuery = new SwingWorker<Void, ScriptResult>() {
       private int resultSlot = 0;
       protected Void doInBackground() throws Exception {
         for (int index = 0; index < commands.size(); index++) {
           if (isCancelled() || Thread.currentThread().isInterrupted()) break;
           String sql = commands.get(index);
-          FederatedQuerySupport.validate(sql, CONNECTIONS.allProfiles());
+          if (writes.get(index) == null) FederatedQuerySupport.validate(sql, CONNECTIONS.allProfiles());
           long started = System.nanoTime();
           Connection connection = null;
           Statement stmt = null;
+          java.util.concurrent.atomic.AtomicReference<Statement> writeStatement = new java.util.concurrent.atomic.AtomicReference<>();
           try {
+            NativeSqlRouter.Route write = writes.get(index);
+            if (write != null) {
+              connection = CONNECTIONS.source(write.source()).getConnection();
+              if (currentQuery == this) RUNNING_CONNECTION.set(connection);
+              SqlWriteExecutor.Result result = SqlWriteExecutor.execute(connection, write.sql(), pageSize,
+                  this::isCancelled, st -> { writeStatement.set(st); if (currentQuery == this) RUNNING_STATEMENT.set(st); });
+              publish(new ScriptResult(result.model(), (System.nanoTime() - started) / 1e9, index + 1, result.affected()));
+              continue;
+            }
             connection = queryConnectionFor(sql, tabAlias);
             stmt = connection.createStatement();
             RUNNING_CONNECTION.set(connection);
@@ -2714,9 +2942,10 @@ public class Main {
             if (isCancelled() || Thread.currentThread().isInterrupted()) break;
             publish(new ScriptResult(model, (System.nanoTime() - started) / 1_000_000_000.0, index + 1, updated));
           } catch (SQLException ex) {
-            throw nativeRoute(sql, tabAlias) == null && directSql(sql) == null
+            throw writes.get(index) == null && nativeRoute(sql, tabAlias) == null && directSql(sql) == null
                 ? FederatedQuerySupport.explain(ex) : ex;
           } finally {
+            RUNNING_STATEMENT.compareAndSet(writeStatement.get(), null);
             RUNNING_STATEMENT.compareAndSet(stmt, null);
             RUNNING_CONNECTION.compareAndSet(connection, null);
             if (stmt != null) try { stmt.close(); } catch (SQLException ignored) {}
@@ -2726,12 +2955,16 @@ public class Main {
         return null;
       }
       protected void process(List<ScriptResult> chunks) {
+        if (currentQuery != this) return;
         for (ScriptResult result : chunks) {
-          if (result.model() != null) showOrUpdateResultTab(result.model(), result.elapsed(), sqlTab,
+          NativeSqlRouter.Route write = writes.get(result.index() - 1);
+          if (write != null) showWriteResult(new SqlWriteExecutor.Result(result.model(), result.updated()),
+              result.elapsed(), sqlTab, commands.get(result.index() - 1), resultSlot++, write.source(), tabAlias);
+          else if (result.model() != null) showOrUpdateResultTab(result.model(), result.elapsed(), sqlTab,
               commands.get(result.index() - 1), resultSlot++, pageSize, tabAlias);
           status.setText(" Script: comando " + result.index() + "/" + commands.size() +
               (result.model() != null ? " - " + result.model().getRowCount() + " linha(s)." :
-                  " - " + result.updated() + " registro(s) afetado(s)."));
+                  " - " + affectedRowsText(result.updated()) + "."));
         }
       }
       protected void done() {
@@ -2807,7 +3040,7 @@ public class Main {
     COLUMN_CACHE.clear();
   }
 
-  private static void closeResources() { CONNECTIONS.close(); }
+  private static void closeResources() { FederatedResultCursor.closeAll(); CONNECTIONS.close(); }
 
   private static void showError(Exception ex) {
     LinkSqlLog.error("Operação do LinkSQL", ex);

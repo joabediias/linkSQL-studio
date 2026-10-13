@@ -20,7 +20,7 @@ final class SqlResultModels {
     int width = meta.getColumnCount();
     Vector<String> headers = new Vector<>(width);
     for (int i = 1; i <= width; i++) headers.add(meta.getColumnLabel(i));
-    Vector<Vector<Object>> rows = new Vector<>();
+    Vector<Vector<Object>> rows = new Vector<>(pageSize > 0 ? pageSize : 1000);
     while (!cancelled.getAsBoolean() && !Thread.currentThread().isInterrupted()
         && (pageSize == 0 || rows.size() < pageSize) && rs.next()) {
       Vector<Object> row = new Vector<>(width);

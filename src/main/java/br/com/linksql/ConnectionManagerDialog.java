@@ -48,7 +48,7 @@ final class ConnectionManagerDialog extends JDialog {
   private String originalName;
   private boolean selecting;
   private final JPanel rows = new LinkSqlFormPanel(null);
-  private final JLabel totalValue = new JLabel(), technologyValue = new JLabel(), readOnlyValue = new JLabel();
+  private final JLabel totalValue = new JLabel(), technologyValue = new JLabel();
   private final JPanel editorBody = new JPanel(new BorderLayout(0, 14));
   private JDialog editorDialog;
 
@@ -77,10 +77,9 @@ final class ConnectionManagerDialog extends JDialog {
     JPanel center = new JPanel(new BorderLayout(0, 12));
     center.setOpaque(false);
     JPanel top = new JPanel(new BorderLayout(0, 12)); top.setOpaque(false);
-    JPanel stats = new JPanel(new GridLayout(1, 3, 14, 0)); stats.setOpaque(false);
+    JPanel stats = new JPanel(new GridLayout(1, 2, 14, 0)); stats.setOpaque(false);
     stats.add(statCard("CONEXÕES SALVAS", totalValue));
     stats.add(statCard("TECNOLOGIAS", technologyValue));
-    stats.add(statCard("PERFIS SOMENTE LEITURA", readOnlyValue));
     top.add(stats, BorderLayout.NORTH);
 
     list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
@@ -159,7 +158,6 @@ final class ConnectionManagerDialog extends JDialog {
   private void rebuildRows() {
     totalValue.setText(String.valueOf(allProfiles.size()));
     technologyValue.setText(String.valueOf(allProfiles.stream().map(JdbcConnectionProfile::type).distinct().count()));
-    readOnlyValue.setText(String.valueOf(allProfiles.stream().filter(JdbcConnectionProfile::readOnly).count()));
     rows.removeAll();
     for (int i = 0; i < profiles.size(); i++) {
       JdbcConnectionProfile profile = profiles.get(i);

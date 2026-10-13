@@ -13,6 +13,8 @@ import com.formdev.flatlaf.FlatLightLaf;
 import org.fife.ui.rsyntaxtextarea.RSyntaxTextArea;
 import org.fife.ui.rsyntaxtextarea.SyntaxConstants;
 import org.fife.ui.rsyntaxtextarea.Theme;
+import org.fife.ui.rsyntaxtextarea.Token;
+import org.fife.ui.rsyntaxtextarea.SyntaxScheme;
 import org.fife.ui.rtextarea.RTextScrollPane;
 
 import javax.swing.*;
@@ -325,7 +327,7 @@ public class Main {
     updatingTabSourceBox = true;
     try {
       tabSourceBox.removeAllItems();
-      tabSourceBox.addItem(new TabSourceChoice("", "Federado (SRV_...)"));
+      tabSourceBox.addItem(new TabSourceChoice("", "Federado"));
       for (JdbcConnectionProfile p : CONNECTIONS.allProfiles())
         tabSourceBox.addItem(new TabSourceChoice(p.name(),
             p.name() + " [" + p.type() + "]"));
@@ -367,8 +369,7 @@ public class Main {
   }
 
   private static void applyLookAndFeel() throws UnsupportedLookAndFeelException {
-    UIManager.setLookAndFeel(darkMode ? new FlatDarkLaf() : new FlatLightLaf());
-    LinkSqlVisualStyle.defaults(darkMode);
+    LinkSqlVisualStyle.install(darkMode);
   }
 
   private static void toggleTheme() {
@@ -444,13 +445,28 @@ public class Main {
     } catch (IOException ex) { ex.printStackTrace(); }
     area.setBackground(LinkSqlVisualStyle.editorSurface());
     area.setForeground(LinkSqlVisualStyle.text());
-    area.setCurrentLineHighlightColor(darkMode ? new Color(37, 54, 77) : new Color(234, 241, 252));
+    area.setCurrentLineHighlightColor(LinkSqlVisualStyle.currentLine());
     area.setCaretColor(LinkSqlVisualStyle.text());
-    area.setSelectionColor(darkMode ? new Color(57, 93, 148) : new Color(200, 221, 253));
+    area.setSelectionColor(LinkSqlVisualStyle.rowSelection());
+    area.setSelectedTextColor(LinkSqlVisualStyle.text());
+    SyntaxScheme scheme = area.getSyntaxScheme();
+    for (int token : new int[]{Token.RESERVED_WORD, Token.RESERVED_WORD_2, Token.DATA_TYPE})
+      scheme.getStyle(token).foreground = LinkSqlVisualStyle.accent();
+    for (int token : new int[]{Token.COMMENT_EOL, Token.COMMENT_MULTILINE, Token.COMMENT_DOCUMENTATION})
+      scheme.getStyle(token).foreground = LinkSqlVisualStyle.subtleText();
+    scheme.getStyle(Token.FUNCTION).foreground = Color.decode(darkMode ? "#B59CFF" : "#7046BD");
+    scheme.getStyle(Token.LITERAL_STRING_DOUBLE_QUOTE).foreground = Color.decode(darkMode ? "#9FCE9F" : "#2F723A");
+    area.setSyntaxScheme(scheme);
+    if (area.getParent() != null && area.getParent().getParent() instanceof RTextScrollPane pane) {
+      pane.getGutter().setBackground(LinkSqlVisualStyle.editorSurface());
+      pane.getGutter().setLineNumberColor(LinkSqlVisualStyle.subtleText());
+      pane.getGutter().setBorderColor(LinkSqlVisualStyle.border());
+    }
   }
 
   private static void createUi() {
-    frame = new JFrame("LinkSQL - 3.3.1");
+    frame = new JFrame("LinkSQL Studio — 3.4.4");
+    LinkSqlAppIcon.apply(frame);
     frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
     frame.addWindowListener(new WindowAdapter() {
       public void windowClosing(WindowEvent e) {
@@ -496,25 +512,24 @@ public class Main {
     LinkSqlVisualStyle.button(execute, "Executar", "play", "primary");
     LinkSqlVisualStyle.button(cancelQueryButton, "Parar", "stop", "danger");
     LinkSqlVisualStyle.button(export, "Exportar CSV", "export", "quiet");
-    toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 3));
+    LinkSqlVisualStyle.button(formatSql, "Formatar", "code", "quiet");
+    LinkSqlVisualStyle.button(executeScriptButton, "Executar script", "play", "quiet");
+    execute.setToolTipText("Executar SQL (Ctrl+Enter)");
+    formatSql.setToolTipText("Formatar SQL (Ctrl+Shift+F)");
+    toolbar = new JPanel(new LinkSqlWrapLayout(FlowLayout.LEFT, 6, 3));
     LinkSqlVisualStyle.surfacePanel(toolbar, "toolbar");
-    // Acoes essenciais visiveis. Demais comandos continuam disponiveis no menu.
-    for (JButton b : new JButton[]{load, newTab, openSql, saveSql}) toolbar.add(b);
-    toolbar.add(Box.createHorizontalStrut(14));
-    for (JButton b : new JButton[]{execute, cancelQueryButton}) toolbar.add(b);
-    toolbar.add(Box.createHorizontalStrut(8));
-    toolbar.add(export);
+    for (JButton b : new JButton[]{execute, cancelQueryButton, formatSql, saveSql}) toolbar.add(b);
 
     JMenuBar menuBar = new JMenuBar();
     JMenu fileMenu = new JMenu("Arquivo");
     addMenuAction(fileMenu, "Nova aba SQL", newTab);
-    addMenuAction(fileMenu, "Abrir SQL...", openSql);
+    addMenuAction(fileMenu, "Abrir SQL", openSql);
     addMenuAction(fileMenu, "Salvar SQL", saveSql);
     addMenuAction(fileMenu, "Fechar aba", closeTab);
     menuBar.add(fileMenu);
 
     JMenu sqlMenu = new JMenu("SQL");
-    JMenuItem renameTab = new JMenuItem("Renomear aba SQL...");
+    JMenuItem renameTab = new JMenuItem("Renomear aba SQL");
     renameTab.addActionListener(e -> renameActiveTab());
     fileMenu.add(renameTab);
     addMenuAction(sqlMenu, "Executar SQL (Ctrl+Enter)", execute);
@@ -541,7 +556,7 @@ public class Main {
     menuBar.add(sqlMenu);
 
     JMenu resultMenu = new JMenu("Resultados");
-    addMenuAction(resultMenu, "Exportar CSV...", export);
+    addMenuAction(resultMenu, "Exportar CSV", export);
     JMenuItem copyHeader = new JMenuItem("Copiar selecao com cabecalho (Ctrl+Shift+C)");
     copyHeader.addActionListener(e -> { if (results != null) copySelectedResults(results, true); });
     resultMenu.add(copyHeader);
@@ -549,12 +564,12 @@ public class Main {
     menuBar.add(resultMenu);
 
     JMenu connectionsMenu = new JMenu("Conexoes");
-    JMenuItem importProfiles = new JMenuItem("Importar perfis de arquivo...");
+    JMenuItem importProfiles = new JMenuItem("Importar perfis de arquivo");
     importProfiles.addActionListener(e -> chooseAndLoad());
     connectionsMenu.add(importProfiles);
     addMenuAction(connectionsMenu, "Gerenciar conexoes", manage);
     addMenuAction(connectionsMenu, "Buscar coluna", searchColumns);
-    JMenuItem structure = new JMenuItem("Estrutura da tabela selecionada...");
+    JMenuItem structure = new JMenuItem("Estrutura da tabela selecionada");
     structure.addActionListener(e -> {
       TreePath path = explorer.getSelectionPath();
       if (path == null) { status.setText(" Selecione uma tabela no explorador."); return; }
@@ -572,11 +587,17 @@ public class Main {
     JMenu viewMenu = new JMenu("Aparência");
     addMenuAction(viewMenu, "Alternar tema claro/escuro", themeButton);
     viewMenu.addSeparator();
-    JMenuItem settingsMenu = new JMenuItem("Configurações... (Ctrl+,)");
-    settingsMenu.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_COMMA, InputEvent.CTRL_DOWN_MASK));
+    JMenuItem settingsMenu = new JMenuItem("Configurações (Ctrl+,)");
+    // Show the shortcut once in the label; keep its key binding active on the window.
+    frame.getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(
+        KeyStroke.getKeyStroke(KeyEvent.VK_COMMA, InputEvent.CTRL_DOWN_MASK), "linksql.settings");
+    frame.getRootPane().getActionMap().put("linksql.settings", new AbstractAction() {
+      @Override public void actionPerformed(ActionEvent e) { openSettings(); }
+    });
     settingsMenu.addActionListener(e -> openSettings());
     viewMenu.add(settingsMenu);
     menuBar.add(viewMenu);
+    for (int i = 0; i < menuBar.getMenuCount(); i++) LinkSqlVisualStyle.popup(menuBar.getMenu(i).getPopupMenu());
     frame.setJMenuBar(menuBar);
 
     rootNode = new DefaultMutableTreeNode("Conexões SQL");
@@ -588,7 +609,8 @@ public class Main {
       public void treeWillExpand(javax.swing.event.TreeExpansionEvent event) {
         Object node = event.getPath().getLastPathComponent();
         if (node instanceof DefaultMutableTreeNode n) {
-          if (n.getUserObject() instanceof SourceNode source && !source.loaded) loadTables(n, source.name);
+          if (n.getUserObject() instanceof SourceNode source && !source.loaded) loadNamespaces(n, source);
+          if (n.getUserObject() instanceof NamespaceNode namespace && !namespace.loaded) loadTables(n, namespace);
           if (n.getUserObject() instanceof RoutineFolder folder && !folder.loaded) loadRoutines(n, folder);
           if (n.getUserObject() instanceof TableNode table && !table.loaded) loadColumns(n, table);
         }
@@ -605,6 +627,7 @@ public class Main {
       }
     });
     JPopupMenu tableMenu = new JPopupMenu();
+    LinkSqlVisualStyle.popup(tableMenu);
     JMenuItem queryTable = new JMenuItem("Consultar dados (100 linhas)");
     JMenuItem copyTable = new JMenuItem("Copiar nome completo");
     JMenuItem inspectTable = new JMenuItem("Estrutura da tabela...");
@@ -647,7 +670,8 @@ public class Main {
     });
     // Ações diretamente no alias da conexão, sem carregar tabelas nem senhas.
     JPopupMenu sourceMenu = new JPopupMenu();
-    JMenuItem editSource = new JMenuItem("Editar conexão...");
+    LinkSqlVisualStyle.popup(sourceMenu);
+    JMenuItem editSource = new JMenuItem("Editar conexão");
     JMenuItem copySource = new JMenuItem("Copiar alias SQL");
     JMenuItem refreshSource = new JMenuItem("Atualizar tabelas");
     sourceMenu.add(editSource); sourceMenu.add(copySource); sourceMenu.add(refreshSource);
@@ -680,7 +704,7 @@ public class Main {
       source.loaded = false;
       TABLE_CACHE.remove(source.name);
       clickedSource[0].removeAllChildren();
-      clickedSource[0].add(new DefaultMutableTreeNode("Expandir para carregar tabelas..."));
+      clickedSource[0].add(new DefaultMutableTreeNode("Expandir para carregar schemas..."));
       ((DefaultTreeModel) explorer.getModel()).reload(clickedSource[0]);
       status.setText(" Tabelas de " + source.name + " prontas para atualizar. Expanda a conexão.");
     });
@@ -755,20 +779,22 @@ public class Main {
     });
     JPanel resultHeader = new JPanel(new BorderLayout(8, 0));
     LinkSqlVisualStyle.surfacePanel(resultHeader, "section");
-    resultHeader.add(resultSummary, BorderLayout.CENTER);
-    JPanel resultTools = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 3));
+    resultHeader.add(resultSummary, BorderLayout.NORTH);
+    JPanel resultTools = LinkSqlVisualStyle.actionRow(FlowLayout.LEFT);
     resultFilterColumn = new JComboBox<>(new String[]{"Todas as colunas"});
     resultFilterColumn.setPrototypeDisplayValue("Todas as colunas");
     LinkSqlVisualStyle.input(resultFilterColumn);
     resultFilterColumn.addActionListener(e -> applyResultFilter());
-    resultTools.add(new JLabel("Coluna:"));
+    resultTools.add(LinkSqlVisualStyle.hint("Coluna:"));
     resultTools.add(resultFilterColumn);
-    resultTools.add(new JLabel("Filtro:"));
+    resultTools.add(LinkSqlVisualStyle.hint("Filtro:"));
     resultTools.add(resultFilter);
-    resultHeader.add(resultTools, BorderLayout.EAST);
+    resultTools.add(export);
+    resultHeader.add(resultTools, BorderLayout.CENTER);
     resultPanel.add(resultHeader, BorderLayout.NORTH);
     resultPanel.add(resultTabs, BorderLayout.CENTER);
-    JPanel paging = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 4));
+    JPanel paging = LinkSqlVisualStyle.actionRow(FlowLayout.RIGHT);
+    LinkSqlVisualStyle.surfacePanel(paging, "toolbar");
     paging.setOpaque(false);
     previousPageButton = new JButton("‹  Anterior");
     nextPageButton = new JButton("Próxima  ›");
@@ -789,28 +815,35 @@ public class Main {
     paging.add(previousPageButton);
     paging.add(pageLabel);
     paging.add(nextPageButton);
-    resultHeader.add(paging, BorderLayout.SOUTH);
+    resultPanel.add(paging, BorderLayout.SOUTH);
     updatePageControls();
     JPanel sqlWorkspace = new JPanel(new BorderLayout());
     LinkSqlVisualStyle.surfacePanel(sqlWorkspace, "shell");
-    JPanel sqlSourceToolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 9, 3));
+    JPanel sqlSourceToolbar = new JPanel(new LinkSqlWrapLayout(FlowLayout.LEFT, 9, 3));
     LinkSqlVisualStyle.surfacePanel(sqlSourceToolbar, "section");
     sqlSourceToolbar.add(LinkSqlVisualStyle.smallLabel("BANCO DESTA ABA"));
     sqlSourceToolbar.add(tabSourceBox);
     JLabel sourceHint = LinkSqlVisualStyle.hint("SQL nativo ou federado com SRV_...");
     sourceHint.setToolTipText("Consultas sem prefixo utilizam o banco desta aba; nomes SRV_XXX permitem consultas federadas.");
-    sqlSourceToolbar.add(sourceHint);
-    sqlWorkspace.add(sqlSourceToolbar, BorderLayout.NORTH);
+    sqlSourceToolbar.setToolTipText(sourceHint.getToolTipText());
+    JPanel editorTools = new JPanel(new BorderLayout());
+    LinkSqlVisualStyle.surfacePanel(editorTools, "shell");
+    editorTools.add(toolbar, BorderLayout.NORTH);
+    editorTools.add(sqlSourceToolbar, BorderLayout.SOUTH);
+    sqlWorkspace.add(editorTools, BorderLayout.NORTH);
     sqlWorkspace.add(tabs, BorderLayout.CENTER);
     JSplitPane vertical = new JSplitPane(JSplitPane.VERTICAL_SPLIT, sqlWorkspace, resultPanel);
     LinkSqlVisualStyle.splitter(vertical);
-    vertical.setResizeWeight(.50);
+    vertical.setResizeWeight(.57);
+    sqlWorkspace.setMinimumSize(new Dimension(420, 160));
+    resultPanel.setMinimumSize(new Dimension(420, 130));
     JPanel explorerPanel = new JPanel(new BorderLayout(0, 0));
     LinkSqlVisualStyle.surfacePanel(explorerPanel, "explorer");
-    explorerPanel.setMinimumSize(new Dimension(240, 120));
+    explorerPanel.setMinimumSize(new Dimension(210, 120));
     JPanel explorerTop = new JPanel(new BorderLayout(0, 8));
     LinkSqlVisualStyle.surfacePanel(explorerTop, "section");
     explorerTop.add(LinkSqlVisualStyle.sectionTitle("Explorador", "Conexões e objetos do banco", "database"), BorderLayout.NORTH);
+
     tableSearch = new JTextField();
     LinkSqlVisualStyle.input(tableSearch);
     tableSearch.putClientProperty("JTextField.placeholderText", "Pesquisar tabela...");
@@ -828,34 +861,9 @@ public class Main {
     status = new JLabel(" Pronto para consultar  ·  " + formatPageSize(preferredPageSize) + " linhas por página");
     LinkSqlVisualStyle.status(status);
 
-    JPanel top = new JPanel(new BorderLayout());
-    JPanel header = new JPanel(new BorderLayout(12, 0));
-    LinkSqlVisualStyle.surfacePanel(header, "header");
-    JPanel brandPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
-    brandPanel.setOpaque(false);
-    JLabel logo = new JLabel(LinkSqlVisualStyle.icon("database", LinkSqlVisualStyle.accent(), 30));
-    brandPanel.add(logo);
-    JPanel brandText = new JPanel(new GridLayout(2, 1));
-    brandText.setOpaque(false);
-    JLabel brand = new JLabel("LinkSQL");
-    brand.setFont(new Font("Segoe UI", Font.BOLD, 19));
-    brand.setForeground(LinkSqlVisualStyle.text());
-    brand.putClientProperty("linksql.labelRole", "normal");
-    brandText.add(brand);
-    brandText.add(LinkSqlVisualStyle.hint("SQL Studio  /  Bancos e federação"));
-    brandPanel.add(brandText);
-    header.add(brandPanel, BorderLayout.WEST);
-    JPanel headerActions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 0));
-    headerActions.setOpaque(false);
-    JLabel version = LinkSqlVisualStyle.smallLabel("VERSÃO 3.3.1");
-    headerActions.add(version);
-    headerActions.add(themeButton);
-    header.add(headerActions, BorderLayout.EAST);
-    top.add(header, BorderLayout.NORTH);
-    top.add(toolbar, BorderLayout.CENTER);
-    frame.add(top, BorderLayout.NORTH);
-    frame.add(horizontal, BorderLayout.CENTER);
-    frame.add(status, BorderLayout.SOUTH);
+    JPanel header = LinkSqlWorkspaceChrome.header(openSql, newTab, themeButton);
+    JPanel rail = LinkSqlWorkspaceChrome.navigation(manage, history, Main::openSettings);
+    frame.setContentPane(LinkSqlWorkspaceChrome.shell(header, rail, horizontal, status));
 
     load.addActionListener(e -> manageConnections());
     manage.addActionListener(e -> manageConnections());
@@ -922,6 +930,10 @@ public class Main {
     RTextScrollPane scroll = new RTextScrollPane(area);
     scroll.setLineNumbersEnabled(true);
     scroll.setFoldIndicatorEnabled(true);
+    scroll.setBorder(BorderFactory.createEmptyBorder());
+    scroll.getGutter().setBackground(LinkSqlVisualStyle.editorSurface());
+    scroll.getGutter().setLineNumberColor(LinkSqlVisualStyle.subtleText());
+    scroll.getGutter().setBorderColor(LinkSqlVisualStyle.border());
     tabs.addTab(title, scroll);
     TAB_SOURCES.put(scroll, "");
     SAVED_TEXT.put(scroll, area.getText());
@@ -1193,6 +1205,7 @@ public class Main {
 
   private static JPopupMenu sqlTabContextMenu(Component target) {
     JPopupMenu menu = new JPopupMenu();
+    LinkSqlVisualStyle.popup(menu);
     JMenuItem close = new JMenuItem("Fechar aba");
     close.addActionListener(e -> {
       int index = tabs.indexOfComponent(target);
@@ -1581,6 +1594,7 @@ public class Main {
     scroll.setBorder(BorderFactory.createEmptyBorder());
     scroll.setPreferredSize(new Dimension(310, Math.min(9, matches.size()) * 25 + 4));
     JPopupMenu menu = new JPopupMenu();
+    LinkSqlVisualStyle.popup(menu);
     menu.setLayout(new BorderLayout());
     menu.add(scroll, BorderLayout.CENTER);
     Runnable accept = () -> {
@@ -1726,77 +1740,89 @@ public class Main {
     rootNode.removeAllChildren();
     for (String name : connectionNames()) {
       DefaultMutableTreeNode node = new DefaultMutableTreeNode(new SourceNode(name));
-      node.add(new DefaultMutableTreeNode("Expandir para carregar tabelas..."));
+      node.add(new DefaultMutableTreeNode("Expandir para carregar schemas..."));
       rootNode.add(node);
     }
     ((DefaultTreeModel) explorer.getModel()).reload();
     explorer.expandRow(0);
   }
 
-  private static void loadTables(DefaultMutableTreeNode node, String name) {
-    SourceNode source = (SourceNode) node.getUserObject();
+  private static void loadNamespaces(DefaultMutableTreeNode node, SourceNode source) {
     source.loaded = true;
     node.removeAllChildren();
-    node.add(new DefaultMutableTreeNode("Carregando objetos..."));
+    DefaultMutableTreeNode folder = new DefaultMutableTreeNode("Schemas");
+    folder.add(new DefaultMutableTreeNode("Carregando bancos e schemas...")); node.add(folder);
     ((DefaultTreeModel) explorer.getModel()).reload(node);
-    new SwingWorker<List<DatabaseCatalog.Entry>, Void>() {
-      protected List<DatabaseCatalog.Entry> doInBackground() throws Exception {
-        try (Connection c = CONNECTIONS.source(name).getConnection()) {
-          return DatabaseCatalog.tables(c, CONNECTIONS.profile(name));
+    new SwingWorker<List<DatabaseCatalog.Namespace>, Void>() {
+      protected List<DatabaseCatalog.Namespace> doInBackground() throws Exception {
+        try (Connection c = CONNECTIONS.source(source.name).getConnection()) {
+          return DatabaseCatalog.namespaces(c, CONNECTIONS.profile(source.name));
         }
       }
       protected void done() {
-        if (node.getParent() == null) return; // A conexão pode ter sido removida durante a leitura.
-        node.removeAllChildren();
+        if (node.getRoot() != rootNode) return;
+        folder.removeAllChildren();
         try {
-          List<DatabaseCatalog.Entry> loaded = get();
-          List<String> tableNames = new ArrayList<>();
-          Map<String, List<DatabaseCatalog.Entry>> bySchema = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-          for (DatabaseCatalog.Entry entry : loaded) {
-            bySchema.computeIfAbsent(entry.namespace(), unused -> new ArrayList<>()).add(entry);
-            tableNames.add(entry.table());
+          List<DatabaseCatalog.Namespace> scopes = get();
+          if (scopes.isEmpty()) folder.add(new DefaultMutableTreeNode("Schema configurado não encontrado ou indisponível"));
+          for (DatabaseCatalog.Namespace scope : scopes) {
+            DefaultMutableTreeNode child = new DefaultMutableTreeNode(new NamespaceNode(source.name, scope));
+            child.add(new DefaultMutableTreeNode("Expandir para carregar objetos...")); folder.add(child);
           }
-          tableNames.sort(String.CASE_INSENSITIVE_ORDER);
-          TABLE_CACHE.put(name, tableNames.stream().distinct().toList());
-          if (bySchema.isEmpty()) {
-            JdbcConnectionProfile profile = CONNECTIONS.profile(name);
-            String defaultNamespace = DatabaseCatalog.namespace(null, null,
-                profile.schemaPattern(), profile.database());
-            bySchema.put(defaultNamespace, new ArrayList<>());
-          }
-          for (Map.Entry<String, List<DatabaseCatalog.Entry>> schema : bySchema.entrySet()) {
-            String namespace = schema.getKey();
-            DefaultMutableTreeNode schemaNode = new DefaultMutableTreeNode("Schema / banco: " + namespace);
-            DefaultMutableTreeNode tablesNode = new DefaultMutableTreeNode("Tabelas");
-            DefaultMutableTreeNode viewsNode = new DefaultMutableTreeNode("Views");
-            String catalog = null, metadataSchema = null;
-            for (DatabaseCatalog.Entry entry : schema.getValue()) {
-              if (catalog == null) catalog = entry.catalog();
-              if (metadataSchema == null) metadataSchema = entry.schema();
-              DefaultMutableTreeNode item = new DefaultMutableTreeNode(
-                  new TableNode(name, entry.table(), entry.schema()));
-              item.add(new DefaultMutableTreeNode("Expandir para carregar colunas..."));
-              (entry.view() ? viewsNode : tablesNode).add(item);
-            }
-            if (tablesNode.getChildCount() == 0) tablesNode.add(new DefaultMutableTreeNode("Nenhuma tabela"));
-            if (viewsNode.getChildCount() == 0) viewsNode.add(new DefaultMutableTreeNode("Nenhuma view"));
-            schemaNode.add(tablesNode);
-            schemaNode.add(viewsNode);
-            DefaultMutableTreeNode procedures = new DefaultMutableTreeNode(
-                new RoutineFolder(name, catalog, metadataSchema, false));
-            procedures.add(new DefaultMutableTreeNode("Expandir para carregar procedimentos..."));
-            schemaNode.add(procedures);
-            DefaultMutableTreeNode functions = new DefaultMutableTreeNode(
-                new RoutineFolder(name, catalog, metadataSchema, true));
-            functions.add(new DefaultMutableTreeNode("Expandir para carregar funções..."));
-            schemaNode.add(functions);
-            node.add(schemaNode);
-          }
-          status.setText(" " + loaded.size() + " tabela(s)/view(s) de " + name + " carregadas.");
+          status.setText(" " + scopes.size() + " banco(s)/schema(s) de " + source.name + " encontrados.");
         } catch (Exception ex) {
           source.loaded = false;
-          node.add(new DefaultMutableTreeNode("Erro: tente expandir novamente"));
+          folder.add(new DefaultMutableTreeNode("Erro: recolha e expanda a conexão para tentar novamente"));
           showError(ex);
+        }
+        ((DefaultTreeModel) explorer.getModel()).reload(node);
+        explorer.expandPath(new TreePath(node.getPath()));
+        explorer.expandPath(new TreePath(folder.getPath()));
+      }
+    }.execute();
+  }
+
+  private static void loadTables(DefaultMutableTreeNode node, NamespaceNode namespace) {
+    namespace.loaded = true;
+    node.removeAllChildren(); node.add(new DefaultMutableTreeNode("Carregando objetos..."));
+    ((DefaultTreeModel) explorer.getModel()).reload(node);
+    new SwingWorker<List<DatabaseCatalog.Entry>, Void>() {
+      protected List<DatabaseCatalog.Entry> doInBackground() throws Exception {
+        try (Connection c = CONNECTIONS.source(namespace.source).getConnection()) {
+          return DatabaseCatalog.tables(c, CONNECTIONS.profile(namespace.source), namespace.scope);
+        }
+      }
+      protected void done() {
+        if (node.getRoot() != rootNode) return;
+        node.removeAllChildren();
+        try {
+          List<DatabaseCatalog.Entry> entries = get();
+          JdbcConnectionProfile profile = CONNECTIONS.profile(namespace.source);
+          DefaultMutableTreeNode tables = new DefaultMutableTreeNode("Tabelas"), views = new DefaultMutableTreeNode("Views");
+          List<String> defaultTables = new ArrayList<>();
+          for (DatabaseCatalog.Entry entry : entries) {
+            boolean defaultScope = namespace.scope.defaultScope()
+                && (profile.type() == SqlDatabaseType.MYSQL || profile.type() == SqlDatabaseType.FIREBIRD
+                    || DatabaseCatalog.same(entry.schema(), profile.schemaForMetadata()));
+            DefaultMutableTreeNode table = new DefaultMutableTreeNode(new TableNode(namespace.source,
+                entry.table(), entry.catalog() != null ? entry.catalog() : namespace.scope.catalog(), entry.schema(), defaultScope));
+            table.add(new DefaultMutableTreeNode("Expandir para carregar colunas..."));
+            (entry.view() ? views : tables).add(table);
+            if (defaultScope) defaultTables.add(entry.table());
+          }
+          if (namespace.scope.defaultScope()) TABLE_CACHE.put(namespace.source, defaultTables.stream().distinct().sorted(String.CASE_INSENSITIVE_ORDER).toList());
+          if (tables.getChildCount() == 0) tables.add(new DefaultMutableTreeNode("Nenhuma tabela"));
+          if (views.getChildCount() == 0) views.add(new DefaultMutableTreeNode("Nenhuma view"));
+          node.add(tables); node.add(views);
+          for (boolean functions : new boolean[]{false, true}) {
+            DefaultMutableTreeNode routines = new DefaultMutableTreeNode(new RoutineFolder(namespace.source,
+                namespace.scope.catalog(), namespace.scope.schema(), functions));
+            routines.add(new DefaultMutableTreeNode("Expandir para carregar rotinas...")); node.add(routines);
+          }
+          status.setText(" " + entries.size() + " tabela(s)/view(s) em " + namespace.scope.name() + ".");
+        } catch (Exception ex) {
+          namespace.loaded = false;
+          node.add(new DefaultMutableTreeNode("Indisponível: tente expandir novamente")); showError(ex);
         }
         ((DefaultTreeModel) explorer.getModel()).reload(node);
         explorer.expandPath(new TreePath(node.getPath()));
@@ -1814,7 +1840,7 @@ public class Main {
         try (Connection c = CONNECTIONS.source(folder.source).getConnection()) {
           JdbcConnectionProfile profile = CONNECTIONS.profile(folder.source);
           return DatabaseCatalog.routines(c, profile, folder.catalog,
-              folder.schema != null ? folder.schema : profile.schemaForMetadata(), folder.functions);
+              folder.schema, folder.functions);
         }
       }
       protected void done() {
@@ -1838,34 +1864,36 @@ public class Main {
   }
 
   private static String qualifiedTable(TableNode table) {
+    if (!table.defaultScope) return nativeTableName(table);
     return table.source + ".\"" + table.table.replace("\"", "\"\"") + "\"";
   }
 
+  private static String nativeTableName(TableNode table) {
+    SqlDatabaseType type = CONNECTIONS.profile(table.source).type();
+    List<String> parts = new ArrayList<>();
+    if ((type == SqlDatabaseType.MYSQL || type == SqlDatabaseType.SQLSERVER) && table.catalog != null && !table.catalog.isBlank()) parts.add(table.catalog);
+    if (type != SqlDatabaseType.MYSQL && table.schema != null && !table.schema.isBlank()) parts.add(table.schema);
+    parts.add(table.table);
+    return parts.stream().map(part -> switch (type) {
+      case MYSQL -> "`" + part.replace("`", "``") + "`";
+      case SQLSERVER -> "[" + part.replace("]", "]]") + "]";
+      default -> "\"" + part.replace("\"", "\"\"") + "\"";
+    }).collect(java.util.stream.Collectors.joining("."));
+  }
+
   private static void insertTableSql(TableNode table) {
-    JTextArea editor = activeEditor();
     String selected = tabSource(tabs.getSelectedComponent());
-    String sqlName = qualifiedTable(table);
-    if (selected.equalsIgnoreCase(table.source)) {
-      JdbcConnectionProfile profile = CONNECTIONS.profile(table.source);
-      SqlDatabaseType type = profile.type();
-      String escapedName = switch (type) {
-        case MYSQL -> "`" + table.table.replace("`", "``") + "`";
-        case SQLSERVER -> "[" + table.table.replace("]", "]]") + "]";
-        default -> "\\\"" + table.table.replace("\\\"", "\\\"\\\"") + "\\\"";
-      };
-      sqlName = escapedName;
-      if (table.schema != null && !table.schema.isBlank()
-          && !table.schema.equalsIgnoreCase(profile.schemaPattern())) {
-        String schemaName = switch (type) {
-          case MYSQL -> "`" + table.schema.replace("`", "``") + "`";
-          case SQLSERVER -> "[" + table.schema.replace("]", "]]") + "]";
-          default -> "\\\"" + table.schema.replace("\\\"", "\\\"\\\"") + "\\\"";
-        };
-        sqlName = schemaName + "." + escapedName;
-      }
+    // Extra namespaces are browsable, but the federated alias still exposes its configured scope.
+    // Open a separate native tab instead of silently reusing a different database under that alias.
+    if (!table.defaultScope && !selected.equalsIgnoreCase(table.source)) {
+      addSqlTab();
+      TAB_SOURCES.put(tabs.getSelectedComponent(), table.source); updateTabSourceChoice();
+      selected = table.source;
+      status.setText(" Aba nativa de " + table.source + " criada para consultar " + nativeTableName(table) + ".");
     }
-    editor.insert("SELECT * FROM " + sqlName + " FETCH NEXT 100 ROWS ONLY;\n",
-        editor.getCaretPosition());
+    JTextArea editor = activeEditor();
+    String sqlName = selected.equalsIgnoreCase(table.source) ? nativeTableName(table) : qualifiedTable(table);
+    editor.insert("SELECT * FROM " + sqlName + " FETCH NEXT 100 ROWS ONLY;\n", editor.getCaretPosition());
     editor.requestFocusInWindow();
   }
 
@@ -1878,8 +1906,9 @@ public class Main {
       protected List<String> doInBackground() throws Exception {
         List<String> columns = new ArrayList<>();
         try (Connection c = CONNECTIONS.source(table.source).getConnection();
-             ResultSet rs = c.getMetaData().getColumns(CONNECTIONS.profile(table.source).catalogFor(c),
-                 (table.schema != null ? table.schema : CONNECTIONS.profile(table.source).schemaForMetadata()), table.table, "%")) {
+             ResultSet rs = c.getMetaData().getColumns(table.catalog,
+                 DatabaseCatalog.literalPattern(c.getMetaData(), table.schema),
+                 DatabaseCatalog.literalPattern(c.getMetaData(), table.table), "%")) {
           while (rs.next()) {
             String name = rs.getString("COLUMN_NAME");
             String type = rs.getString("TYPE_NAME");
@@ -1893,7 +1922,7 @@ public class Main {
         node.removeAllChildren();
         try {
           List<String> columns = get();
-          COLUMN_CACHE.put(table.source + "." + table.table, columns.stream().map(c -> c.split("  :  ")[0]).toList());
+          if (table.defaultScope) COLUMN_CACHE.put(table.source + "." + table.table, columns.stream().map(c -> c.split("  :  ")[0]).toList());
           for (String column : columns) node.add(new DefaultMutableTreeNode(column));
           status.setText(" " + columns.size() + " colunas de " + table.table + ".");
         } catch (Exception ex) {
@@ -1988,6 +2017,7 @@ public class Main {
       public void actionPerformed(ActionEvent e) { copySelectedResults(table); }
     });
     JPopupMenu copyMenu = new JPopupMenu();
+    LinkSqlVisualStyle.popup(copyMenu);
     JMenuItem copyItem = new JMenuItem("Copiar selecao (Ctrl+C)");
     copyItem.addActionListener(e -> copySelectedResults(table));
     copyMenu.add(copyItem);
@@ -2616,7 +2646,7 @@ public class Main {
       return;
     }
     TableMetadataDialog.show(frame, source, table.source, table.table, selectedColumn,
-        CONNECTIONS.profile(table.source));
+        CONNECTIONS.profile(table.source), table.catalog, table.schema);
   }
 
   private record ScriptResult(DefaultTableModel model, double elapsed, int index, int updated) {}
@@ -2808,13 +2838,24 @@ public class Main {
       return name + (profile == null ? "" : "  [" + profile.type() + "]");
     }
   }
-  private static class TableNode {
-    final String source, table, schema;
+  private static class NamespaceNode {
+    final String source;
+    final DatabaseCatalog.Namespace scope;
     boolean loaded;
-    TableNode(String source, String table, String schema) {
-      this.source = source; this.table = table; this.schema = schema;
+    NamespaceNode(String source, DatabaseCatalog.Namespace scope) { this.source = source; this.scope = scope; }
+    public String toString() { return scope.name(); }
+  }
+  private static class TableNode {
+    final String source, table, catalog, schema;
+    final boolean defaultScope;
+    boolean loaded;
+    TableNode(String source, String table, String catalog, String schema, boolean defaultScope) {
+      this.source = source; this.table = table; this.catalog = catalog; this.schema = schema; this.defaultScope = defaultScope;
     }
-    public String toString() { return table; }
+    public String toString() {
+      JdbcConnectionProfile profile = CONNECTIONS.profile(source);
+      return profile != null && profile.type() == SqlDatabaseType.SQLSERVER && schema != null ? schema + "." + table : table;
+    }
   }
 
   private static class RoutineFolder {

@@ -47,7 +47,7 @@ record JdbcConnectionProfile(
       if (!normalizedUrl.startsWith(expectedPrefix))
         throw new IllegalArgumentException("URL JDBC incompativel com o tipo " + type + ".");
       if (normalizedUrl.matches("(?s).*(?:password|pwd)\\s*=.*"))
-        throw new IllegalArgumentException("Nao inclua a senha na URL JDBC; use a variavel de ambiente.");
+        throw new IllegalArgumentException("Nao inclua a senha na URL JDBC; use o campo Senha.");
     }
     if (user == null || user.isBlank()) throw new IllegalArgumentException("Usuario e obrigatorio.");
     if (passwordEnv == null || !passwordEnv.matches("[A-Za-z_][A-Za-z0-9_]*"))

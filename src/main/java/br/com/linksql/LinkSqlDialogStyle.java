@@ -11,8 +11,8 @@ import java.awt.*;
  */
 final class LinkSqlDialogStyle {
   private LinkSqlDialogStyle() {}
-  private static final Font BODY = new Font("Segoe UI", Font.PLAIN, 12);
-  private static final Font CAPTION = new Font("Segoe UI", Font.BOLD, 11);
+  private static final Font BODY = new Font("Segoe UI", Font.PLAIN, 13);
+  private static final Font CAPTION = new Font("Segoe UI", Font.BOLD, 12);
 
   static void window(JDialog dialog) {
     Container content = dialog.getContentPane();
@@ -25,6 +25,7 @@ final class LinkSqlDialogStyle {
     container.setOpaque(false);
     JLabel icon = new JLabel(LinkSqlVisualStyle.icon(iconName, LinkSqlVisualStyle.accent(), 27));
     icon.setBorder(BorderFactory.createEmptyBorder(0, 2, 0, 0));
+    icon.putClientProperty("linksql.iconName", iconName);
     container.add(icon, BorderLayout.WEST);
     JPanel headings = new JPanel(new GridLayout(2, 1, 0, 2));
     headings.setOpaque(false);
@@ -111,15 +112,48 @@ final class LinkSqlDialogStyle {
   }
 
   static JPanel footer() {
-    JPanel panel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 5));
+    JPanel panel = new JPanel(new LinkSqlWrapLayout(FlowLayout.RIGHT, 8, 5));
     panel.setOpaque(false);
     return panel;
   }
 
+  static JPanel card(String title, String description, Component body) {
+    JPanel card = new RoundedSurface(new BorderLayout(0, 8));
+    card.setBorder(BorderFactory.createEmptyBorder(10, 14, 10, 14));
+    JPanel labels = new JPanel(new BorderLayout(0, 5));
+    labels.setOpaque(false);
+    JLabel heading = new JLabel(title);
+    heading.setFont(new Font("Segoe UI", Font.BOLD, 14));
+    heading.setForeground(LinkSqlVisualStyle.text());
+    labels.add(heading, BorderLayout.NORTH);
+    JTextArea note = note(description);
+    note.setBorder(null);
+    labels.add(note, BorderLayout.CENTER);
+    card.add(labels, BorderLayout.NORTH);
+    card.add(body, BorderLayout.CENTER);
+    return card;
+  }
+
+  private static final class RoundedSurface extends JPanel {
+    RoundedSurface(LayoutManager layout) { super(layout); setOpaque(false); }
+    @Override protected void paintComponent(Graphics graphics) {
+      Graphics2D g = (Graphics2D) graphics.create();
+      g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+      g.setColor(LinkSqlVisualStyle.surface()); g.fillRoundRect(0, 0, getWidth()-1, getHeight()-1, 16, 16);
+      g.setColor(LinkSqlVisualStyle.border()); g.drawRoundRect(0, 0, getWidth()-1, getHeight()-1, 16, 16);
+      g.dispose(); super.paintComponent(graphics);
+    }
+  }
+
   static JPanel section(String label, Component body) {
     JPanel panel = new JPanel(new BorderLayout(0, 9));
-    panel.setOpaque(false);
-    panel.add(caption(label), BorderLayout.NORTH);
+    panel.setBackground(LinkSqlVisualStyle.surface());
+    JLabel title = caption(label);
+    title.setVerticalAlignment(SwingConstants.CENTER);
+    title.setBorder(BorderFactory.createEmptyBorder(8, 10, 8, 10));
+    title.setOpaque(true);
+    title.setBackground(LinkSqlVisualStyle.surface());
+    panel.add(title, BorderLayout.NORTH);
     panel.add(body, BorderLayout.CENTER);
     return panel;
   }

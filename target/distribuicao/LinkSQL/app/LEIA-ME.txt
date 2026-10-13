@@ -1,4 +1,4 @@
-﻿LinkSQL 3.3.1
+﻿LinkSQL 3.4.4
 - O arquivo de conexoes da versao instalada fica em:
   %USERPROFILE%\.linksql\config\connections.json
 - Configure suas conexoes pelo menu Conexoes > Gerenciar conexoes.

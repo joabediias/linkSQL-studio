@@ -48,7 +48,10 @@ final class SqlHistoryDialog {
         label.setBorder(BorderFactory.createEmptyBorder(6, 10, 6, 10));
         label.setBackground(selected ? LinkSqlVisualStyle.rowSelection() : LinkSqlVisualStyle.surface());
         label.setForeground(LinkSqlVisualStyle.text());
-        label.setIcon(LinkSqlVisualStyle.icon("history", LinkSqlVisualStyle.accent(), 14));
+        boolean favorite = index >= 0 && index < visible.size() && favorites.contains(visible.get(index));
+        label.setIcon(LinkSqlVisualStyle.icon(favorite ? "star-filled" : "history",
+            favorite ? LinkSqlVisualStyle.accent() : LinkSqlVisualStyle.subtleText(), 16));
+        label.setVerticalAlignment(SwingConstants.CENTER);
         label.setIconTextGap(9);
         return label;
       }
@@ -66,7 +69,7 @@ final class SqlHistoryDialog {
     search.putClientProperty("JTextField.placeholderText", "Pesquisar no texto das consultas...");
     JCheckBox onlyFavorites = new JCheckBox("Somente favoritos");
     JButton favoriteButton = new JButton("Marcar favorito");
-    LinkSqlDialogStyle.button(favoriteButton, "history", false);
+    LinkSqlDialogStyle.button(favoriteButton, "star", false);
     favoriteButton.setEnabled(false);
     Runnable updatePreview = () -> {
       int selected = list.getSelectedIndex();
@@ -79,7 +82,9 @@ final class SqlHistoryDialog {
       preview.setText(sql);
       preview.setCaretPosition(0);
       favoriteButton.setEnabled(true);
-      favoriteButton.setText(favorites.contains(sql) ? "Remover favorito" : "Marcar favorito");
+      LinkSqlVisualStyle.button(favoriteButton,
+          favorites.contains(sql) ? "Remover favorito" : "Marcar favorito",
+          favorites.contains(sql) ? "star-filled" : "star", "quiet");
     };
     Runnable filter = () -> {
       String previous = list.getSelectedIndex() >= 0 && list.getSelectedIndex() < visible.size()
@@ -92,8 +97,7 @@ final class SqlHistoryDialog {
         if (!sql.toLowerCase(Locale.ROOT).contains(term)) continue;
         visible.add(sql);
         String oneLine = sql.replaceAll("\\s+", " ").trim();
-        String prefix = favorites.contains(sql) ? "★  " : "    ";
-        labels.addElement(prefix + (oneLine.length() > 108 ? oneLine.substring(0, 108) + "..." : oneLine));
+        labels.addElement((oneLine.length() > 108 ? oneLine.substring(0, 108) + "..." : oneLine));
       }
       int index = previous == null ? -1 : visible.indexOf(previous);
       if (!visible.isEmpty()) list.setSelectedIndex(index >= 0 ? index : 0);
@@ -121,7 +125,7 @@ final class SqlHistoryDialog {
       }
       filter.run();
     });
-    JPanel tools = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 6));
+    JPanel tools = new JPanel(new LinkSqlWrapLayout(FlowLayout.LEFT, 8, 6));
     tools.setOpaque(false);
     tools.add(LinkSqlDialogStyle.caption("PESQUISA"));
     tools.add(search);

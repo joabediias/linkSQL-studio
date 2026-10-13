@@ -16,7 +16,7 @@ Produzir um executável **LinkSQL.exe** portátil com Java incluído e, quando o
 ```powershell
 cd "E:\Projetos\linksql"
 mvn clean compile
-.\distribuicao\GERAR-WINDOWS.bat
+.\distribuicao\gerar-windows.bat
 ```
 
 O BAT chama `distribuicao/gerar-windows.ps1`. O script:

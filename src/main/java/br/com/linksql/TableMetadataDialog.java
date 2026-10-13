@@ -24,11 +24,11 @@ final class TableMetadataDialog {
   }
 
   private static List<ColumnInfo> fetch(DataSource ds, String table,
-                                        JdbcConnectionProfile profile) throws SQLException {
+                                        JdbcConnectionProfile profile, String selectedCatalog, String selectedSchema) throws SQLException {
     try (Connection conn = ds.getConnection()) {
       DatabaseMetaData meta = conn.getMetaData();
-      String catalog = profile.catalogFor(conn);
-      String schema = profile.schemaForMetadata();
+      String catalog = selectedCatalog;
+      String schema = selectedSchema;
       Set<String> primary = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
       try (ResultSet rs = meta.getPrimaryKeys(catalog, schema, table)) {
         while (rs.next()) {
@@ -37,7 +37,7 @@ final class TableMetadataDialog {
         }
       }
       List<ColumnInfo> columns = new ArrayList<>();
-      try (ResultSet rs = meta.getColumns(catalog, schema, table, "%")) {
+      try (ResultSet rs = meta.getColumns(catalog, DatabaseCatalog.literalPattern(meta, schema), DatabaseCatalog.literalPattern(meta, table), "%")) {
         while (rs.next()) {
           String name = rs.getString("COLUMN_NAME");
           String nullable = optional(rs, "IS_NULLABLE");
@@ -57,7 +57,7 @@ final class TableMetadataDialog {
   }
 
   static void show(JFrame owner, DataSource source, String server, String table,
-                   String column, JdbcConnectionProfile profile) {
+                   String column, JdbcConnectionProfile profile, String catalog, String schema) {
     JDialog dialog = new JDialog(owner, "Estrutura — " + server + "." + table, false);
     dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
     JPanel body = new JPanel(new BorderLayout(8, 14));
@@ -73,7 +73,7 @@ final class TableMetadataDialog {
     waiting.setHorizontalAlignment(SwingConstants.CENTER);
     body.add(waiting, BorderLayout.CENTER);
     JButton close = new JButton("Fechar");
-    LinkSqlDialogStyle.button(close, "stop", false);
+    LinkSqlDialogStyle.button(close, "close", false);
     close.addActionListener(e -> dialog.dispose());
     JPanel buttons = LinkSqlDialogStyle.footer();
     buttons.add(close);
@@ -86,7 +86,7 @@ final class TableMetadataDialog {
 
     SwingWorker<List<ColumnInfo>, Void> worker = new SwingWorker<>() {
       protected List<ColumnInfo> doInBackground() throws Exception {
-        return fetch(source, table, profile);
+        return fetch(source, table, profile, catalog, schema);
       }
       protected void done() {
         if (!dialog.isDisplayable() || isCancelled()) return;

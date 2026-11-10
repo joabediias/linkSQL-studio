@@ -47,7 +47,10 @@ final class DatabaseCatalog {
           if (name != null && !name.isBlank()) result.put(name.toLowerCase(Locale.ROOT),
               new Namespace(name, name, null, same(name, catalog)));
         }
-      } catch (SQLException ignored) { /* Current scope is still usable. */ }
+      } catch (SQLException ex) {
+        if (profile.mysqlAllCatalogs()) throw ex;
+        // Current scope is still usable.
+      }
     } else if (profile.type() != SqlDatabaseType.FIREBIRD) {
       try (ResultSet rs = meta.getSchemas()) {
         while (rs.next()) {
@@ -63,7 +66,8 @@ final class DatabaseCatalog {
     String current = namespace(catalog, schema, profile.schemaPattern(), profile.database());
     if (profile.type() == SqlDatabaseType.MYSQL || profile.type() == SqlDatabaseType.SQLSERVER)
       current = namespace(catalog, null, null, profile.database());
-    result.putIfAbsent(current.toLowerCase(Locale.ROOT), new Namespace(current, catalog, schema, true));
+    if (!profile.mysqlAllCatalogs() || catalog != null && !catalog.isBlank())
+      result.putIfAbsent(current.toLowerCase(Locale.ROOT), new Namespace(current, catalog, schema, true));
     List<Namespace> namespaces = new ArrayList<>(result.values());
     namespaces.sort(Comparator.comparing(Namespace::name, String.CASE_INSENSITIVE_ORDER));
     return namespaces;

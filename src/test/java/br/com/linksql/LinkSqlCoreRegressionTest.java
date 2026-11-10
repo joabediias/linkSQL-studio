@@ -96,7 +96,9 @@ public final class LinkSqlCoreRegressionTest {
           "comando REPLACE continua fora da rota de leitura");
       check(SqlQueryPlanner.directSql(migrationSql.replace("CONCAT('C', TRIM(c.codigo))",
           "'C' || TRIM(c.codigo)"), mysqlSources) == null,
-          "a rota ampliada não muda silenciosamente a interpretação de ||");
+          "consulta de migração com || preserva a interpretação federada");
+      check(SqlQueryPlanner.directSql("SELECT 'C' || c.codigo FROM SRV_MATRIZ.clientes c",
+          mysqlSources) == null, "|| continua sendo concatenação mesmo com uma única origem");
       check(SqlPageTotals.whenExhausted(0, 100, 37) == 37L,
           "contagem inferida apenas em pagina incompleta");
       check(SqlPageTotals.whenExhausted(0, 100, 100) == null,

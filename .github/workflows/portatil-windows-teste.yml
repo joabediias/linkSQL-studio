@@ -1,0 +1,38 @@
+name: LinkSQL portátil para teste no Windows
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  portatil-windows:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'fix/roteamento-consultas-mysql'
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Baixar a versão em teste
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Configurar JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Compilar e gerar a pasta portátil
+        shell: powershell
+        run: .\distribuicao\gerar-windows.ps1 -SomentePortatil -SemZip
+      - name: Disponibilizar o executável com as dependências
+        uses: actions/upload-artifact@v4
+        with:
+          name: LinkSQL-4.0.0-PR1-portatil-windows-x64
+          path: target/distribuicao/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14

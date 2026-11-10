@@ -32,8 +32,10 @@ record JdbcConnectionProfile(
       throw new IllegalArgumentException("Nome da conexao invalido: " + name + " (use letras, numeros e _)");
     if (type == null) throw new IllegalArgumentException("Escolha o tipo do banco.");
     if (jdbcUrl == null || jdbcUrl.isBlank()) {
-      if (host == null || host.isBlank() || database == null || database.isBlank())
-        throw new IllegalArgumentException("Host e banco/servico sao obrigatorios sem URL JDBC personalizada.");
+      if (host == null || host.isBlank())
+        throw new IllegalArgumentException("Host obrigatório sem URL JDBC personalizada.");
+      if (type != SqlDatabaseType.MYSQL && (database == null || database.isBlank()))
+        throw new IllegalArgumentException("Banco/serviço obrigatório para " + type + ".");
       if (port < 1 || port > 65535) throw new IllegalArgumentException("Porta deve estar entre 1 e 65535.");
     } else {
       String normalizedUrl = jdbcUrl.toLowerCase(java.util.Locale.ROOT);
@@ -55,7 +57,16 @@ record JdbcConnectionProfile(
   }
 
   String resolvedJdbcUrl() {
-    return jdbcUrl != null && !jdbcUrl.isBlank() ? jdbcUrl : type.url(host, port, database);
+    if (jdbcUrl != null && !jdbcUrl.isBlank()) return jdbcUrl;
+    String defaultDatabase = database == null ? "" : database;
+    if (type == SqlDatabaseType.MYSQL && defaultDatabase.isBlank() && schema != null)
+      defaultDatabase = schema;
+    return type.url(host, port, defaultDatabase);
+  }
+
+  boolean mysqlAllCatalogs() {
+    return type == SqlDatabaseType.MYSQL && (database == null || database.isBlank())
+        && (schema == null || schema.isBlank());
   }
 
   String schemaPattern() {

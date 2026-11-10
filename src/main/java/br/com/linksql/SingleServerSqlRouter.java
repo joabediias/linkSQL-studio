@@ -32,8 +32,6 @@ final class SingleServerSqlRouter {
 
     String source = null;
     int topSelects = 0;
-    boolean usesPipes = false;
-    boolean usesNewRouting = false;
     List<Range> prefixRanges = new ArrayList<>();
     Set<Integer> tableQualifiers = new HashSet<>();
     Set<Integer> selectDepths = new HashSet<>();
@@ -44,7 +42,8 @@ final class SingleServerSqlRouter {
       Token t = tokens.get(i);
       if (t.kind() == Kind.OTHER && t.value().equals("|") && i + 1 < tokens.size()) {
         Token next = tokens.get(i + 1);
-        usesPipes |= next.kind() == Kind.OTHER && next.value().equals("|") && next.start() == t.end();
+        // Em SQL federado || concatena, mas o MySQL pode interpretá-lo como OR.
+        if (next.kind() == Kind.OTHER && next.value().equals("|") && next.start() == t.end()) return null;
       }
       if (t.kind() == Kind.RPAREN) selectDepths.remove(t.depth() + 1);
       if (t.word("SELECT")) {
@@ -63,7 +62,6 @@ final class SingleServerSqlRouter {
         return null;
       if (t.depth() == 0 && t.word("REPLACE")) {
         if (i + 1 >= tokens.size() || tokens.get(i + 1).kind() != Kind.LPAREN) return null;
-        usesNewRouting = true;
       }
       if (t.depth() == 0 && (t.word("INSERT") || t.word("UPDATE") || t.word("DELETE")
           || t.word("CREATE") || t.word("ALTER") || t.word("DROP")
@@ -76,7 +74,6 @@ final class SingleServerSqlRouter {
       // pertence a uma expressão, sem SELECT no mesmo nível.
       if (t.word("FROM")) {
         if (!selectDepths.contains(t.depth())) {
-          usesNewRouting = true;
           continue;
         }
         fromClauses.add(i);
@@ -113,9 +110,7 @@ final class SingleServerSqlRouter {
             && resolveSource(tokens.get(after).value(), sourceNames) != null) return null;
       }
     }
-    // Não trocar silenciosamente o significado de || em consultas que antes
-    // poderiam passar pelo Calcite (concatenação lá, OR no MySQL padrão).
-    if (source == null || topSelects == 0 || (usesPipes && usesNewRouting)) return null;
+    if (source == null || topSelects == 0) return null;
 
     // JOIN implicito por virgula pode incluir outra tabela nao qualificada ou
     // outra base. Mantemos essas variantes no Calcite ate suportar sua analise completa.

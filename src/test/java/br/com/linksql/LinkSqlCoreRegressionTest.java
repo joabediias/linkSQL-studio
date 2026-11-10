@@ -73,6 +73,30 @@ public final class LinkSqlCoreRegressionTest {
       check(SqlTabRouting.route("DELETE FROM clientes", "SRV_PG", registered)==null,
           "comando de escrita nao recebe roteamento de SELECT");
       check(SqlTabRouting.missingAlias("NAO_EXISTE", registered), "alias inexistente detectado");
+      var mysqlSources = List.of("SRV_MATRIZ", "SRV_FILIAL");
+      String migrationSql = """
+          SELECT CONCAT('C', TRIM(c.codigo)), REPLACE(c.cpf, '.', ''),
+                 SUBSTRING(CAST(c.cadastro AS CHAR) FROM 1 FOR 10),
+                 TRIM(BOTH ' ' FROM c.nome)
+          FROM SRV_MATRIZ.clientes c
+          LEFT JOIN SRV_MATRIZ.regioes r ON r.id = c.regiao
+          """;
+      var direct = SqlQueryPlanner.directSql(migrationSql, mysqlSources);
+      check(direct != null && direct.source().equals("SRV_MATRIZ")
+          && direct.sql().equals(migrationSql.strip().replace("SRV_MATRIZ.", "")),
+          "SELECT MySQL de migração mantém as funções nativas e remove só os prefixos de origem");
+      check(SqlQueryPlanner.directSql(migrationSql.replace("SRV_MATRIZ.regioes", "SRV_FILIAL.regioes"),
+          mysqlSources) == null, "JOIN entre origens permanece federado com funções de texto");
+      check(SqlQueryPlanner.directSql("""
+          SELECT SUBSTRING(c.nome FROM 1 FOR 3),
+                 (SELECT COUNT(*) FROM SRV_FILIAL.regioes)
+          FROM SRV_MATRIZ.clientes c
+          """, mysqlSources) == null, "origem de subconsulta continua sendo identificada");
+      check(SqlQueryPlanner.directSql("REPLACE INTO SRV_MATRIZ.clientes VALUES (1)", mysqlSources) == null,
+          "comando REPLACE continua fora da rota de leitura");
+      check(SqlQueryPlanner.directSql(migrationSql.replace("CONCAT('C', TRIM(c.codigo))",
+          "'C' || TRIM(c.codigo)"), mysqlSources) == null,
+          "a rota ampliada não muda silenciosamente a interpretação de ||");
       check(SqlPageTotals.whenExhausted(0, 100, 37) == 37L,
           "contagem inferida apenas em pagina incompleta");
       check(SqlPageTotals.whenExhausted(0, 100, 100) == null,

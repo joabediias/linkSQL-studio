@@ -2758,7 +2758,8 @@ public class Main {
     cancelQueryButton.setEnabled(true);
     CANCEL_REQUESTED.set(false);
     final long started = System.nanoTime();
-    status.setText(" Executando consulta...");
+    final String routeLabel = executionLabel(query, tabAlias);
+    status.setText(" Executando consulta... | " + routeLabel);
     final long[] phases = new long[3]; // conexão, execução SQL, leitura
     currentQuery = new SwingWorker<DefaultTableModel, Void>() {
       private FederatedResultCursor cursor;
@@ -2831,8 +2832,8 @@ public class Main {
               phases[0] / 1e9, phases[1] / 1e9, phases[2] / 1e9);
           status.setText(" Consulta: " + formatRowCount(model.getRowCount()) + " linhas em "
               + String.format(Locale.ROOT, "%.2f s", elapsed) + " | " + details
-              + " | " + executionLabel(query, tabAlias));
-          status.setToolTipText(details + " | " + executionLabel(query, tabAlias));
+              + " | " + routeLabel);
+          status.setToolTipText(details + " | " + routeLabel);
         } catch (Exception ex) {
           if (cursor != null) cursor.closeAsync();
           if (CANCEL_REQUESTED.get()) status.setText(" Consulta cancelada. Resultados anteriores preservados.");

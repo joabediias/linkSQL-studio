@@ -32,13 +32,25 @@ final class SingleServerSqlRouter {
 
     String source = null;
     int topSelects = 0;
+    boolean usesPipes = false;
+    boolean usesNewRouting = false;
     List<Range> prefixRanges = new ArrayList<>();
     Set<Integer> tableQualifiers = new HashSet<>();
+    Set<Integer> selectDepths = new HashSet<>();
+    Set<Integer> fromClauses = new HashSet<>();
     Set<String> references = new HashSet<>();
 
     for (int i = 0; i < tokens.size(); i++) {
       Token t = tokens.get(i);
-      if (t.depth() == 0 && t.word("SELECT")) topSelects++;
+      if (t.kind() == Kind.OTHER && t.value().equals("|") && i + 1 < tokens.size()) {
+        Token next = tokens.get(i + 1);
+        usesPipes |= next.kind() == Kind.OTHER && next.value().equals("|") && next.start() == t.end();
+      }
+      if (t.kind() == Kind.RPAREN) selectDepths.remove(t.depth() + 1);
+      if (t.word("SELECT")) {
+        selectDepths.add(t.depth());
+        if (t.depth() == 0) topSelects++;
+      }
       // Algumas extensoes do Calcite nao sao aceitas pelo MySQL; preserve a rota federada.
       if (t.word("ILIKE") || t.word("TABLESAMPLE") || t.word("OFFSET") || t.word("FETCH")
           || (t.word("SIMILAR") && i + 1 < tokens.size() && tokens.get(i + 1).word("TO"))
@@ -49,13 +61,26 @@ final class SingleServerSqlRouter {
           || (t.word("NULLS") && i + 1 < tokens.size()
               && (tokens.get(i + 1).word("FIRST") || tokens.get(i + 1).word("LAST"))))
         return null;
+      if (t.depth() == 0 && t.word("REPLACE")) {
+        if (i + 1 >= tokens.size() || tokens.get(i + 1).kind() != Kind.LPAREN) return null;
+        usesNewRouting = true;
+      }
       if (t.depth() == 0 && (t.word("INSERT") || t.word("UPDATE") || t.word("DELETE")
-          || t.word("CREATE") || t.word("ALTER") || t.word("DROP") || t.word("REPLACE")
+          || t.word("CREATE") || t.word("ALTER") || t.word("DROP")
           || t.word("TRUNCATE") || t.word("MERGE") || t.word("CALL"))) return null;
       // SELECT ... INTO OUTFILE/variavel e SELECT ... FOR UPDATE nao sao leituras puras.
       if (t.word("INTO") || (t.word("FOR") && i + 1 < tokens.size() && tokens.get(i + 1).word("UPDATE")))
         return null;
       if (!t.word("FROM") && !t.word("JOIN")) continue;
+      // FROM de SUBSTRING(... FROM ... FOR ...) e TRIM(... FROM ...)
+      // pertence a uma expressão, sem SELECT no mesmo nível.
+      if (t.word("FROM")) {
+        if (!selectDepths.contains(t.depth())) {
+          usesNewRouting = true;
+          continue;
+        }
+        fromClauses.add(i);
+      }
       int next = i + 1;
       if (next < tokens.size() && tokens.get(next).word("LATERAL")) next++;
       if (next >= tokens.size()) return null;
@@ -88,13 +113,15 @@ final class SingleServerSqlRouter {
             && resolveSource(tokens.get(after).value(), sourceNames) != null) return null;
       }
     }
-    if (source == null || topSelects == 0) return null;
+    // Não trocar silenciosamente o significado de || em consultas que antes
+    // poderiam passar pelo Calcite (concatenação lá, OR no MySQL padrão).
+    if (source == null || topSelects == 0 || (usesPipes && usesNewRouting)) return null;
 
     // JOIN implicito por virgula pode incluir outra tabela nao qualificada ou
     // outra base. Mantemos essas variantes no Calcite ate suportar sua analise completa.
     for (int i = 0; i < tokens.size(); i++) {
       Token t = tokens.get(i);
-      if (!t.word("FROM")) continue;
+      if (!fromClauses.contains(i)) continue;
       int level = t.depth();
       for (int j = i + 1; j < tokens.size(); j++) {
         Token p = tokens.get(j);

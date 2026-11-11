@@ -392,7 +392,7 @@ public final class LinkSqlRelease40RegressionTest {
 
   private static void commandFeedback() throws Exception {
     String[] fields = {"resultTabs", "resultSummary", "previousPageButton", "nextPageButton",
-        "pageLabel", "pageSizeBox", "results", "tabs", "resultCards", "displayedResult"};
+        "pageLabel", "pageSizeBox", "results", "tabs", "resultCards", "displayedResult", "preferredPageSize"};
     Map<Field,Object> original = new LinkedHashMap<>();
     for (String name : fields) {
       Field f = Main.class.getDeclaredField(name); f.setAccessible(true); original.put(f,f.get(null));
@@ -414,7 +414,7 @@ public final class LinkSqlRelease40RegressionTest {
         editors.addTab("SQL 2", second);
         JButton previous = new JButton(), next = new JButton();
         JComboBox<String> sizes = new JComboBox<>(new String[]{"Todas (1 página)","1.000"});
-        Object[] values = {null,summary,previous,next,page,sizes,null,editors,cards,null};
+        Object[] values = {null,summary,previous,next,page,sizes,null,editors,cards,null,0};
         int index = 0; for (Field field : original.keySet()) field.set(null,values[index++]);
         Field active = original.keySet().iterator().next();
         activate.invoke(null);

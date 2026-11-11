@@ -2308,13 +2308,15 @@ public class Main {
     JTabbedPane pane = resultsFor(sqlTab);
     if (pane == null) { if (cursor != null) cursor.closeAsync(); return null; }
     JScrollPane scroll;
+    boolean newTab;
     if (slot < pane.getTabCount() && pane.getComponentAt(slot) instanceof JScrollPane existing) {
       scroll = existing;
+      newTab = false;
       if (displayedResult == scroll && resultFilterDebounce != null) resultFilterDebounce.stop();
       releaseResult(scroll);
     } else {
       scroll = new JScrollPane();
-      pane.addTab("Resultado " + (slot + 1), scroll);
+      newTab = true;
     }
     JTable table = newResultTable(model);
     scroll.setViewportView(table);
@@ -2335,8 +2337,10 @@ public class Main {
     if (pageSize == 0) scroll.putClientProperty("totalRows", (long) model.getRowCount());
     scroll.putClientProperty("pageCache", null);
     pageCache(scroll).put(0, model);
-    requestCount(scroll, sql);
     String title = "Resultado " + (slot + 1) + " (" + formatRowCount(model.getRowCount()) + ")";
+    // addTab pode disparar a seleção imediatamente. Publique só com a grade pronta.
+    if (newTab) pane.addTab(title, scroll);
+    requestCount(scroll, sql);
     int idx = pane.indexOfComponent(scroll);
     pane.setTitleAt(idx, title);
     pane.setTabComponentAt(idx, resultTabHeader(title, scroll));
@@ -2449,7 +2453,8 @@ public class Main {
   private static void updatePageControls() {
     if (previousPageButton == null || nextPageButton == null || pageLabel == null) return;
     Component selected = resultTabs == null ? null : resultTabs.getSelectedComponent();
-    JScrollPane scroll = selected instanceof JScrollPane p ? p : null;
+    JTable table = selected instanceof JScrollPane p && p.getViewport().getView() instanceof JTable grid ? grid : null;
+    JScrollPane scroll = table != null ? (JScrollPane) selected : null;
     int size = scroll == null ? preferredPageSize : resultPageSize(scroll);
     if (pageSizeBox != null) {
       pageSizeBox.setEnabled(scroll == null || scroll.getClientProperty("commandFeedback") == null);
@@ -2478,7 +2483,7 @@ public class Main {
     nextPageButton.setEnabled(pagingSupported && Boolean.TRUE.equals(scroll.getClientProperty("resultHasMore")) && !busy);
     Object totalObj = scroll.getClientProperty("totalRows");
     if (size == 0) {
-      int loaded = ((JTable) scroll.getViewport().getView()).getModel().getRowCount();
+      int loaded = table.getModel().getRowCount();
       pageLabel.setText(String.format(new Locale("pt", "BR"),
           "Página 1 de 1  ·  %,d registros", loaded));
       previousPageButton.setEnabled(false);

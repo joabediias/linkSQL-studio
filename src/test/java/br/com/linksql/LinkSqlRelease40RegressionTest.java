@@ -18,6 +18,8 @@ import org.apache.calcite.linq4j.*;
 import org.apache.calcite.rel.type.*;
 import org.apache.calcite.schema.*;
 import org.apache.calcite.schema.impl.*;
+import org.apache.calcite.sql.dialect.MysqlSqlDialect;
+import org.apache.calcite.sql.parser.SqlParser;
 import org.apache.calcite.sql.type.SqlTypeName;
 
 /** Regressões determinísticas, sem bancos externos, credenciais ou perfil real. */
@@ -175,7 +177,7 @@ public final class LinkSqlRelease40RegressionTest {
     }
   }
   private static Connection calcite() throws SQLException {
-    Connection c=DriverManager.getConnection("jdbc:calcite:caseSensitive=false");
+    Connection c=SqlConnectionRegistry.openCalciteConnection();
     SchemaPlus root=c.unwrap(CalciteConnection.class).getRootSchema();
     root.add("FACT",new AbstractSchema()).add("ITEMS",new Rows(true));
     root.add("DIM",new AbstractSchema()).add("LOOKUP",new Rows(false));
@@ -191,6 +193,84 @@ public final class LinkSqlRelease40RegressionTest {
       }catch(InvocationTargetException ex){throw ex.getCause();}
     });
   }
+  private static void federatedConcatenation() throws Exception {
+    String sql = """
+        SELECT CONCAT('C', TRIM(' 00000' || CAST(f.ID AS VARCHAR(10)))) AS CHAVE_FUNCAO,
+               'C' || TRIM(' 00000' || CAST(f.ID AS VARCHAR(10))) AS CHAVE_OPERADOR,
+               CONCAT('C', d.NAME, '-', CAST(f.ID AS VARCHAR(10))) AS CHAVE_DUAS_ORIGENS,
+               CONCAT('C', NULLIF(d.NAME, 'grupo-2')) AS CHAVE_NULA
+        FROM FACT.ITEMS f JOIN DIM.LOOKUP d ON f.GROUP_ID = d.ID
+        WHERE f.ID = 1
+        """;
+    try (Connection c = calcite(); Statement s = c.createStatement(); ResultSet r = s.executeQuery(sql)) {
+      check(r.next(), "JOIN federado devolve o cliente");
+      check("C000001".equals(r.getString("CHAVE_FUNCAO")), "CONCAT preserva zeros no modo federado");
+      check("C000001".equals(r.getString("CHAVE_OPERADOR")), "|| concatena no modo federado");
+      check("Cgrupo-2-1".equals(r.getString("CHAVE_DUAS_ORIGENS")), "CONCAT combina duas origens");
+      check(r.getString("CHAVE_NULA") == null, "CONCAT mantém NULL como no MySQL");
+    }
+    var mysql = new MysqlCompatDialect(MysqlSqlDialect.DEFAULT_CONTEXT);
+    String pushedSql = SqlParser.create("'C' || TRIM(CLI_CODIGO)").parseExpression().toSqlString(mysql).getSql();
+    check(pushedSql.startsWith("CONCAT(") && pushedSql.contains("TRIM(") && !pushedSql.contains("||"),
+        "SQL gerado para MySQL usa CONCAT no lugar de ||");
+  }
+
+  private static void federatedCustomerExport() throws SQLException {
+    // Exercita texto, datas e condições do SELECT de clientes com uma segunda origem.
+    String sql = """
+        SELECT COALESCE(NULLIF(UPPER(TRIM(c.RAZAO)), ''), UPPER(TRIM(c.FANTASIA))) AS NOME,
+               REPLACE(REPLACE(TRIM(c.CNPJ), '.', ''), '/', '') AS DOCUMENTO,
+               SUBSTRING(TRIM(c.CEP) FROM 1 FOR 8) AS CEP,
+               CASE WHEN YEAR(c.ATIVACAO) >= 1900 AND c.ATIVACAO > c.INATIVACAO
+                    THEN 'S' ELSE 'N' END AS ATIVO,
+               SUBSTRING(CAST(c.ATIVACAO AS VARCHAR(10)) FROM 9 FOR 2) || '/' ||
+               SUBSTRING(CAST(c.ATIVACAO AS VARCHAR(10)) FROM 6 FOR 2) || '/' ||
+               SUBSTRING(CAST(c.ATIVACAO AS VARCHAR(10)) FROM 1 FOR 4) AS DATA_CADASTRO,
+               CASE WHEN CHAR_LENGTH(TRIM(c.RAZAO)) > 0 THEN c.RAZAO ELSE 'SEM RAZAO' END AS RAZAO,
+               UPPER(TRIM(d.NAME)) AS GRUPO
+        FROM (SELECT f.GROUP_ID, ' ' AS RAZAO, ' loja exemplo ' AS FANTASIA,
+                     ' 12.345/67 ' AS CNPJ, ' 123456789 ' AS CEP,
+                     DATE '2024-03-09' AS ATIVACAO, DATE '2023-01-01' AS INATIVACAO
+              FROM FACT.ITEMS f WHERE f.ID = 1) c
+        JOIN DIM.LOOKUP d ON c.GROUP_ID = d.ID
+        """;
+    try (Connection c = calcite(); Statement s = c.createStatement(); ResultSet r = s.executeQuery(sql)) {
+      check(r.next(), "exportação federada devolve um cliente");
+      check("LOJA EXEMPLO".equals(r.getString("NOME")), "fallback entre razão social e fantasia");
+      check("1234567".equals(r.getString("DOCUMENTO")), "remoção de pontuação do documento");
+      check("12345678".equals(r.getString("CEP")), "SUBSTRING ... FROM ... FOR no CEP");
+      check("S".equals(r.getString("ATIVO")), "YEAR e comparação de datas");
+      check("09/03/2024".equals(r.getString("DATA_CADASTRO")), "formatação do cadastro");
+      check("SEM RAZAO".equals(r.getString("RAZAO").trim()), "CHAR_LENGTH e CASE");
+      check("GRUPO-2".equals(r.getString("GRUPO")), "grupo obtido da segunda origem");
+    }
+  }
+
+  private static void federatedSupplierExport() throws SQLException {
+    String sql = """
+        SELECT CONCAT('F', TRIM(c.CODIGO)) AS CHAVE,
+               CASE WHEN REPLACE(c.CEP, '-', '') REGEXP '^[0-9]{1,8}$'
+                    THEN RPAD(REPLACE(c.CEP, '-', ''), 8, '0') ELSE '' END AS CEP,
+               CASE WHEN c.CEP NOT REGEXP '^[0-9-]{1,9}$' THEN 'erro' ELSE 'ok' END AS STATUS_CEP,
+               DATE_FORMAT(c.CADASTRO, '%d/%m/%Y') AS CADASTRO,
+               CONCAT_WS(' | ', 'REGEXP', NULLIF(TRIM(c.OBS), ''), d.NAME, NULL) AS OBS,
+               CONCAT_WS(' | ', NULL, NULL) AS OBS_VAZIA
+        FROM (SELECT f.GROUP_ID, CAST(f.ID AS VARCHAR(10)) AS CODIGO, '123-45' AS CEP,
+                     DATE '2024-03-09' AS CADASTRO, ' ' AS OBS
+              FROM FACT.ITEMS f WHERE f.ID = 1) c
+        JOIN DIM.LOOKUP d ON c.GROUP_ID = d.ID
+        """;
+    try (Connection c = calcite(); Statement s = c.createStatement(); ResultSet r = s.executeQuery(sql)) {
+      check(r.next(), "exportação federada devolve fornecedor");
+      check("F1".equals(r.getString("CHAVE")), "concatenação da chave de fornecedor");
+      check("12345000".equals(r.getString("CEP")), "REGEXP e RPAD do CEP");
+      check("ok".equals(r.getString("STATUS_CEP").trim()), "NOT REGEXP");
+      check("09/03/2024".equals(r.getString("CADASTRO")), "DATE_FORMAT do cadastro");
+      check("REGEXP | grupo-2".equals(r.getString("OBS")), "CONCAT_WS ignora NULL e preserva o literal");
+      check("".equals(r.getString("OBS_VAZIA")), "CONCAT_WS não deixa separador com todos os valores nulos");
+    }
+  }
+
   private static void cursorsAndBenchmark() throws Exception {
     String sql="SELECT f.ID, d.NAME FROM FACT.ITEMS f JOIN DIM.LOOKUP d ON f.GROUP_ID=d.ID ORDER BY f.ID";
     // Aquecimento comum, excluído da medição.
@@ -277,31 +357,72 @@ public final class LinkSqlRelease40RegressionTest {
         catch (IllegalAccessException ex) { throw new RuntimeException(ex); } }); }
   }
 
+  private static void mysqlCatalogDiscovery() throws Exception {
+    var server = new JdbcConnectionProfile("SRV_TESTE", SqlDatabaseType.MYSQL, "localhost", 3306,
+        "", "", "consulta", "LINKSQL_TEST_PASSWORD", "", true);
+    server.validate();
+    check(server.mysqlAllCatalogs() && server.resolvedJdbcUrl().startsWith("jdbc:mysql://localhost:3306/?"),
+        "MySQL aceita URL sem banco padrão");
+    var other = new JdbcConnectionProfile("SRV_PG", SqlDatabaseType.POSTGRESQL, "localhost", 5432,
+        "", "", "consulta", "LINKSQL_TEST_PASSWORD", "", true);
+    blocked(other::validate, "PostgreSQL ainda exige banco sem URL personalizada");
+    ClassLoader loader = LinkSqlRelease40RegressionTest.class.getClassLoader();
+    DatabaseMetaData meta = (DatabaseMetaData) Proxy.newProxyInstance(loader, new Class<?>[]{DatabaseMetaData.class}, (p,m,a) -> {
+      if (!m.getName().equals("getCatalogs")) return zero(m.getReturnType());
+      Iterator<String> names = List.of("matriz", "filial").iterator();
+      String[] current = {null};
+      return Proxy.newProxyInstance(loader, new Class<?>[]{ResultSet.class}, (rp,rm,ra) -> switch (rm.getName()) {
+        case "next" -> { current[0] = names.hasNext() ? names.next() : null; yield current[0] != null; }
+        case "getString" -> current[0];
+        default -> zero(rm.getReturnType());
+      });
+    });
+    try (Connection c = (Connection) Proxy.newProxyInstance(loader, new Class<?>[]{Connection.class},
+        (p,m,a) -> m.getName().equals("getMetaData") ? meta : zero(m.getReturnType()))) {
+      var catalogs = DatabaseCatalog.namespaces(c, server);
+      check(catalogs.stream().map(DatabaseCatalog.Namespace::name).toList().equals(List.of("filial", "matriz"))
+          && catalogs.stream().noneMatch(DatabaseCatalog.Namespace::defaultScope),
+          "descobre os catálogos acessíveis sem inventar um padrão");
+      var filtered = new JdbcConnectionProfile("SRV_TESTE", SqlDatabaseType.MYSQL, "localhost", 3306,
+          "", "matriz", "consulta", "LINKSQL_TEST_PASSWORD", "", true);
+      check(DatabaseCatalog.namespaces(c, filtered).stream().map(DatabaseCatalog.Namespace::name).toList()
+          .equals(List.of("matriz")), "schema preenchido mantém o filtro de catálogo");
+    }
+  }
+
   private static void commandFeedback() throws Exception {
     String[] fields = {"resultTabs", "resultSummary", "previousPageButton", "nextPageButton",
-        "pageLabel", "pageSizeBox", "results"};
+        "pageLabel", "pageSizeBox", "results", "tabs", "resultCards", "displayedResult", "preferredPageSize"};
     Map<Field,Object> original = new LinkedHashMap<>();
     for (String name : fields) {
       Field f = Main.class.getDeclaredField(name); f.setAccessible(true); original.put(f,f.get(null));
     }
     Method show = Main.class.getDeclaredMethod("showWriteResult", SqlWriteExecutor.Result.class,
         double.class, java.awt.Component.class, String.class, int.class, String.class, String.class);
-    Method trim = Main.class.getDeclaredMethod("trimResultTabs", int.class);
+    Method trim = Main.class.getDeclaredMethod("trimResultTabs", java.awt.Component.class, int.class);
+    Method activate = Main.class.getDeclaredMethod("activateSqlResults");
+    Field panes = Main.class.getDeclaredField("RESULT_PANES"); panes.setAccessible(true);
     Method load = Main.class.getDeclaredMethod("loadResultPage", JScrollPane.class, int.class);
     Method read = Main.class.getDeclaredMethod("showOrUpdateResultTab", DefaultTableModel.class,
         double.class, java.awt.Component.class, String.class, int.class, int.class, String.class);
-    for (Method method : List.of(show,trim,load,read)) method.setAccessible(true);
+    for (Method method : List.of(show,trim,load,read,activate)) method.setAccessible(true);
     SwingUtilities.invokeAndWait(() -> {
       try {
-        JTabbedPane tabs = new JTabbedPane(); JLabel summary = new JLabel(), page = new JLabel();
+        JTabbedPane editors = new JTabbedPane(); JLabel summary = new JLabel(), page = new JLabel();
+        JPanel first = new JPanel(), second = new JPanel(), cards = new JPanel(new java.awt.CardLayout());
+        editors.addTab("SQL 1", first);
+        editors.addTab("SQL 2", second);
         JButton previous = new JButton(), next = new JButton();
         JComboBox<String> sizes = new JComboBox<>(new String[]{"Todas (1 página)","1.000"});
-        Object[] values = {tabs,summary,previous,next,page,sizes,null};
+        Object[] values = {null,summary,previous,next,page,sizes,null,editors,cards,null,0};
         int index = 0; for (Field field : original.keySet()) field.set(null,values[index++]);
+        Field active = original.keySet().iterator().next();
+        activate.invoke(null);
+        JTabbedPane tabs = (JTabbedPane) active.get(null);
         // Um script de escrita mantém uma confirmação por comando, inclusive zero e DDL.
         for (int slot = 0; slot < 3; slot++) {
           int affected = new int[]{7,0,-1}[slot];
-          show.invoke(null,new SqlWriteExecutor.Result(null,affected),0.25,null,
+          show.invoke(null,new SqlWriteExecutor.Result(null,affected),0.25,first,
               "UPDATE t SET v=1",slot,"SRV_PG","SRV_PG");
           JScrollPane scroll = (JScrollPane) tabs.getComponentAt(slot);
           DefaultTableModel model = (DefaultTableModel)((JTable)scroll.getViewport().getView()).getModel();
@@ -317,19 +438,39 @@ public final class LinkSqlRelease40RegressionTest {
           load.invoke(null,scroll,1);
           check(scroll.getClientProperty("resultPage").equals(0),"escrita nunca reexecutada pela paginação");
         }
-        trim.invoke(null,3);
+        trim.invoke(null,first,3);
         check(tabs.getTabCount()==3,"script somente de escrita preserva todas as confirmações");
         DefaultTableModel returned = new DefaultTableModel(new Object[][]{{123}},new Object[]{"ID"});
-        show.invoke(null,new SqlWriteExecutor.Result(returned,-1),0.5,null,
+        show.invoke(null,new SqlWriteExecutor.Result(returned,-1),0.5,first,
             "INSERT INTO t VALUES(123) RETURNING id",0,"SRV_PG","SRV_PG");
         check(((JTable)((JScrollPane)tabs.getComponentAt(0)).getViewport().getView()).getModel()==returned,
             "dados RETURNING preservados");
         check(summary.getText().contains("1 linha(s) retornada(s)"),"retorno não confundido com registros afetados");
-        read.invoke(null,returned,0.1,null,"SELECT 123",0,0,"SRV_PG");
+        read.invoke(null,returned,0.1,first,"SELECT 123",0,0,"SRV_PG");
         check(((JScrollPane)tabs.getComponentAt(0)).getClientProperty("commandFeedback")==null && sizes.isEnabled(),
             "SELECT posterior remove estado de escrita e restaura controles");
+        JScrollPane retained = (JScrollPane) tabs.getComponentAt(0);
+        retained.putClientProperty("resultPage", 2);
+        retained.putClientProperty("resultFilter", "123");
+        editors.setSelectedComponent(second);
+        activate.invoke(null);
+        JTabbedPane secondResults = (JTabbedPane) active.get(null);
+        check(secondResults.getTabCount() == 0 && secondResults != tabs, "nova aba começa sem resultados");
+        DefaultTableModel other = new DefaultTableModel(new Object[][]{{456}}, new Object[]{"ID"});
+        read.invoke(null,other,0.1,second,"SELECT 456",0,0,"SRV_PG");
+        read.invoke(null,returned,0.1,first,"SELECT 123",1,0,"SRV_PG"); // consulta termina em segundo plano
+        trim.invoke(null,first,2);
+        check(active.get(null) == secondResults && ((JTable)((JScrollPane)secondResults.getComponentAt(0))
+            .getViewport().getView()).getModel() == other, "resultado assíncrono não substitui a aba visível");
+        editors.setSelectedComponent(first);
+        activate.invoke(null);
+        check(active.get(null) == tabs && tabs.getTabCount() == 2, "resultados retornam com a aba de origem");
+        check(tabs.getComponentAt(0) == retained && retained.getClientProperty("resultPage").equals(2)
+            && retained.getClientProperty("resultFilter").equals("123"), "grade, página e filtro preservados");
       } catch (ReflectiveOperationException ex) { throw new RuntimeException(ex); }
       finally {
+        try { ((Map<?,?>) panes.get(null)).clear(); }
+        catch (IllegalAccessException ex) { throw new RuntimeException(ex); }
         for (var entry : original.entrySet()) try { entry.getKey().set(null,entry.getValue()); }
           catch (IllegalAccessException ex) { throw new RuntimeException(ex); }
       }
@@ -341,7 +482,8 @@ public final class LinkSqlRelease40RegressionTest {
     Path home=Files.createTempDirectory("linksql40-regression-");
     String original=System.getProperty("user.home");System.setProperty("user.home",home.toString());
     try {
-      policyAndTransfer(home);transactionsAndStreaming();cursorsAndBenchmark();alwaysCountFederated();commandFeedback();
+      policyAndTransfer(home);transactionsAndStreaming();federatedConcatenation();federatedCustomerExport();
+      federatedSupplierExport();cursorsAndBenchmark();alwaysCountFederated();mysqlCatalogDiscovery();commandFeedback();
       System.out.println("LinkSQL 4.0.0: "+checks+" verificações de escrita, transferência, cancelamento e paginação APROVADAS.");
     } finally {
       System.setProperty("user.home",original);

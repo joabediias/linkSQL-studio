@@ -118,7 +118,10 @@ public class Main {
   private static JLabel status;
   private static JTable results;
   private static JTabbedPane resultTabs;
-  private static int nextResultNumber = 1;
+  private static final Map<Component, JTabbedPane> RESULT_PANES = new IdentityHashMap<>();
+  private static JPanel resultCards;
+  private static int nextResultCard;
+  private static JScrollPane displayedResult;
   private static JTabbedPane tabs;
   private static JTree explorer;
   private static DefaultMutableTreeNode rootNode;
@@ -280,7 +283,7 @@ public class Main {
               if (!rs.next()) throw new SQLException("Contagem nao retornou registros.");
               long total = FederatedCountSupport.effectiveTotal(rs.getLong(1), sql);
               SwingUtilities.invokeLater(() -> {
-                if (resultTabs.indexOfComponent(scroll) >= 0
+                if (scroll.getParent() instanceof JTabbedPane
                     && ticket == scroll.getClientProperty("countTicket")
                     && sql.equals(scroll.getClientProperty("sqlQueryKey"))) {
                   scroll.putClientProperty("totalRows", total);
@@ -294,7 +297,7 @@ public class Main {
       } catch (Exception ex) {
         LinkSqlLog.error("Falha na contagem auxiliar " + (federated ? "federada" : "nativa"), ex);
         SwingUtilities.invokeLater(() -> {
-          if (resultTabs.indexOfComponent(scroll) >= 0
+          if (scroll.getParent() instanceof JTabbedPane
               && ticket == scroll.getClientProperty("countTicket")
               && sql.equals(scroll.getClientProperty("sqlQueryKey"))) {
             scroll.putClientProperty("countPending", false);
@@ -765,6 +768,7 @@ public class Main {
     tabs.addChangeListener(e -> {
       scheduleSessionSave();
       updateTabSourceChoice();
+      activateSqlResults();
     });
     tabSourceBox = new JComboBox<>();
     tabSourceBox.setPreferredSize(new Dimension(250, 30));
@@ -778,9 +782,8 @@ public class Main {
       scheduleSessionSave();
     });
     updateTabSourceChoice();
-    resultTabs = new JTabbedPane();
-    LinkSqlVisualStyle.tabPane(resultTabs);
-    resultTabs.addChangeListener(e -> selectResultTab());
+    resultCards = new JPanel(new CardLayout());
+    LinkSqlVisualStyle.surfacePanel(resultCards, "results");
     JPanel resultPanel = new JPanel(new BorderLayout());
     LinkSqlVisualStyle.surfacePanel(resultPanel, "results");
     resultSummary = new JLabel("  RESULTADOS");
@@ -788,9 +791,10 @@ public class Main {
     resultSummary.setForeground(LinkSqlVisualStyle.text());
     resultSummary.putClientProperty("linksql.labelRole", "normal");
     resultSummary.setIcon(LinkSqlVisualStyle.icon("table", LinkSqlVisualStyle.accent(), 16));
-    resultSummary.setIconTextGap(8);
-    resultSummary.setBorder(BorderFactory.createEmptyBorder(7, 3, 6, 6));
-    resultFilter = new JTextField(14);
+    resultSummary.putClientProperty("linksql.iconName", "table");
+    resultSummary.setIconTextGap(5);
+    resultSummary.setBorder(BorderFactory.createEmptyBorder(0, 2, 0, 4));
+    resultFilter = new JTextField(13);
     resultFilter.putClientProperty("JTextField.placeholderText", "Pesquisar nos resultados...");
     LinkSqlVisualStyle.input(resultFilter);
     resultFilter.setToolTipText("Filtra os dados ja carregados na aba selecionada; nao consulta novamente o servidor.");
@@ -799,37 +803,38 @@ public class Main {
     resultFilterDebounce = new javax.swing.Timer(resultFilterDelayMs, e -> applyResultFilter());
     resultFilterDebounce.setRepeats(false);
     resultFilter.getDocument().addDocumentListener(new DocumentListener() {
-      public void insertUpdate(DocumentEvent e) { resultFilterDebounce.restart(); }
-      public void removeUpdate(DocumentEvent e) { resultFilterDebounce.restart(); }
-      public void changedUpdate(DocumentEvent e) { resultFilterDebounce.restart(); }
+      public void insertUpdate(DocumentEvent e) { if (!changingResultTab) resultFilterDebounce.restart(); }
+      public void removeUpdate(DocumentEvent e) { if (!changingResultTab) resultFilterDebounce.restart(); }
+      public void changedUpdate(DocumentEvent e) { if (!changingResultTab) resultFilterDebounce.restart(); }
     });
-    JPanel resultHeader = new JPanel(new BorderLayout(8, 0));
-    LinkSqlVisualStyle.surfacePanel(resultHeader, "section");
-    resultHeader.add(resultSummary, BorderLayout.NORTH);
-    JPanel resultTools = LinkSqlVisualStyle.actionRow(FlowLayout.LEFT);
+    JPanel resultTools = new JPanel(new LinkSqlWrapLayout(FlowLayout.LEFT, 6, 2));
+    LinkSqlVisualStyle.surfacePanel(resultTools, "resultsToolbar");
+    export.setMargin(new Insets(2, 7, 2, 7));
+    resultTools.add(resultSummary);
     resultFilterColumn = new JComboBox<>(new String[]{"Todas as colunas"});
     resultFilterColumn.setPrototypeDisplayValue("Todas as colunas");
     LinkSqlVisualStyle.input(resultFilterColumn);
     resultFilterColumn.addActionListener(e -> applyResultFilter());
-    resultTools.add(LinkSqlVisualStyle.hint("Coluna:"));
+    resultFilterColumn.setToolTipText("Coluna usada pelo filtro");
     resultTools.add(resultFilterColumn);
-    resultTools.add(LinkSqlVisualStyle.hint("Filtro:"));
     resultTools.add(resultFilter);
     resultTools.add(export);
-    resultHeader.add(resultTools, BorderLayout.CENTER);
-    resultPanel.add(resultHeader, BorderLayout.NORTH);
-    resultPanel.add(resultTabs, BorderLayout.CENTER);
-    JPanel paging = LinkSqlVisualStyle.actionRow(FlowLayout.RIGHT);
-    LinkSqlVisualStyle.surfacePanel(paging, "toolbar");
-    paging.setOpaque(false);
-    previousPageButton = new JButton("‹  Anterior");
-    nextPageButton = new JButton("Próxima  ›");
+    resultPanel.add(resultTools, BorderLayout.NORTH);
+    resultPanel.add(resultCards, BorderLayout.CENTER);
+    JPanel paging = new JPanel(new LinkSqlWrapLayout(FlowLayout.RIGHT, 4, 1));
+    LinkSqlVisualStyle.surfacePanel(paging, "resultsToolbar");
+    previousPageButton = new JButton("‹");
+    nextPageButton = new JButton("›");
+    previousPageButton.setToolTipText("Página anterior");
+    nextPageButton.setToolTipText("Próxima página");
+    previousPageButton.getAccessibleContext().setAccessibleName("Página anterior");
+    nextPageButton.getAccessibleContext().setAccessibleName("Próxima página");
     pageLabel = new JLabel("Página 1");
     pageSizeBox = new JComboBox<>(new String[]{"100", "250", "500", "1.000", "2.000", "5.000", "10.000", "20.000", "50.000", "100.000", "Todas (1 página)"});
     pageSizeBox.setEditable(true);
     pageSizeBox.setSelectedItem(formatPageSize(preferredPageSize));
     pageSizeBox.setToolTipText("De 100 a 100.000 linhas, ou todas em uma única página. A opção Todas pode usar muita memória.");
-    pageSizeBox.setPreferredSize(new Dimension(102, 28));
+    pageSizeBox.setPreferredSize(new Dimension(102, 25));
     LinkSqlVisualStyle.input(pageSizeBox);
     previousPageButton.putClientProperty("JButton.buttonType", "toolBarButton");
     nextPageButton.putClientProperty("JButton.buttonType", "toolBarButton");
@@ -842,7 +847,7 @@ public class Main {
     paging.add(pageLabel);
     paging.add(nextPageButton);
     resultPanel.add(paging, BorderLayout.SOUTH);
-    updatePageControls();
+    activateSqlResults();
     JPanel sqlWorkspace = new JPanel(new BorderLayout());
     LinkSqlVisualStyle.surfacePanel(sqlWorkspace, "shell");
     JPanel sqlSourceToolbar = new JPanel(new LinkSqlWrapLayout(FlowLayout.LEFT, 9, 3));
@@ -862,7 +867,7 @@ public class Main {
     LinkSqlVisualStyle.splitter(vertical);
     vertical.setResizeWeight(.57);
     sqlWorkspace.setMinimumSize(new Dimension(420, 160));
-    resultPanel.setMinimumSize(new Dimension(420, 130));
+    resultPanel.setMinimumSize(new Dimension(360, 105));
     JPanel explorerPanel = new JPanel(new BorderLayout(0, 0));
     LinkSqlVisualStyle.surfacePanel(explorerPanel, "explorer");
     explorerPanel.setMinimumSize(new Dimension(210, 120));
@@ -1269,6 +1274,14 @@ public class Main {
     OPEN_FILES.remove(tab);
     SAVED_TEXT.remove(tab);
     TAB_SOURCES.remove(tab);
+    JTabbedPane pane = RESULT_PANES.remove(tab);
+    if (pane != null) {
+      while (pane.getTabCount() > 0) {
+        releaseResult(pane.getComponentAt(0));
+        pane.removeTabAt(0);
+      }
+      resultCards.remove(pane);
+    }
     tabs.removeTabAt(index);
     if (ensureOneTab && tabs.getTabCount() == 0 && frame.isDisplayable()) addSqlTab();
     scheduleSessionSave();
@@ -1808,7 +1821,7 @@ public class Main {
         folder.removeAllChildren();
         try {
           List<DatabaseCatalog.Namespace> scopes = get();
-          if (scopes.isEmpty()) folder.add(new DefaultMutableTreeNode("Schema configurado não encontrado ou indisponível"));
+          if (scopes.isEmpty()) folder.add(new DefaultMutableTreeNode("Nenhum banco ou schema acessível"));
           for (DatabaseCatalog.Namespace scope : scopes) {
             DefaultMutableTreeNode child = new DefaultMutableTreeNode(new NamespaceNode(source.name, scope));
             child.add(new DefaultMutableTreeNode("Expandir para carregar objetos...")); folder.add(child);
@@ -1908,8 +1921,19 @@ public class Main {
   }
 
   private static String qualifiedTable(TableNode table) {
+    if (federatedMysqlCatalog(table))
+      return table.source + "." + quoteFederated(table.catalog) + "." + quoteFederated(table.table);
     if (!table.defaultScope) return nativeTableName(table);
-    return table.source + ".\"" + table.table.replace("\"", "\"\"") + "\"";
+    return table.source + "." + quoteFederated(table.table);
+  }
+
+  private static String quoteFederated(String name) {
+    return "\"" + name.replace("\"", "\"\"") + "\"";
+  }
+
+  private static boolean federatedMysqlCatalog(TableNode table) {
+    JdbcConnectionProfile profile = CONNECTIONS.profile(table.source);
+    return profile != null && profile.mysqlAllCatalogs() && table.catalog != null && !table.catalog.isBlank();
   }
 
   private static String nativeTableName(TableNode table) {
@@ -1929,7 +1953,7 @@ public class Main {
     String selected = tabSource(tabs.getSelectedComponent());
     // Extra namespaces are browsable, but the federated alias still exposes its configured scope.
     // Open a separate native tab instead of silently reusing a different database under that alias.
-    if (!table.defaultScope && !selected.equalsIgnoreCase(table.source)) {
+    if (!table.defaultScope && !federatedMysqlCatalog(table) && !selected.equalsIgnoreCase(table.source)) {
       addSqlTab();
       TAB_SOURCES.put(tabs.getSelectedComponent(), table.source); updateTabSourceChoice();
       selected = table.source;
@@ -2019,7 +2043,6 @@ public class Main {
     JTable table = new JTable(model);
     table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
     table.setAutoCreateRowSorter(true);
-    table.setRowHeight(28);
     table.setShowHorizontalLines(true);
     table.setShowVerticalLines(false);
     table.setCellSelectionEnabled(true);
@@ -2143,10 +2166,9 @@ public class Main {
         return false;
       }
     });
-    Component tab = resultTabs.getSelectedComponent();
-    if (tab instanceof JComponent component) {
-      component.putClientProperty("resultFilter", value);
-      component.putClientProperty("resultFilterColumn", resultFilterColumn.getSelectedIndex());
+    if (displayedResult != null) {
+      displayedResult.putClientProperty("resultFilter", value);
+      displayedResult.putClientProperty("resultFilterColumn", resultFilterColumn.getSelectedIndex());
     }
     status.setText(" Filtro local: " + results.getRowCount() + " de " + results.getModel().getRowCount() + " linhas exibidas.");
   }
@@ -2178,10 +2200,37 @@ public class Main {
     canceller.start();
   }
 
+  private static JTabbedPane resultsFor(Component sqlTab) {
+    if (sqlTab == null || tabs.indexOfComponent(sqlTab) < 0) return null;
+    return RESULT_PANES.computeIfAbsent(sqlTab, ignored -> {
+      JTabbedPane pane = new JTabbedPane();
+      LinkSqlVisualStyle.tabPane(pane);
+      pane.putClientProperty("JTabbedPane.tabHeight", 27);
+      pane.putClientProperty("JTabbedPane.tabInsets", new Insets(1, 8, 1, 8));
+      pane.setTabLayoutPolicy(JTabbedPane.SCROLL_TAB_LAYOUT);
+      String card = String.valueOf(++nextResultCard);
+      pane.setName(card);
+      resultCards.add(pane, card);
+      pane.addChangeListener(e -> { if (pane == resultTabs) selectResultTab(); });
+      return pane;
+    });
+  }
+
+  private static void activateSqlResults() {
+    resultTabs = resultsFor(tabs.getSelectedComponent());
+    if (resultTabs != null) ((CardLayout) resultCards.getLayout()).show(resultCards, resultTabs.getName());
+    selectResultTab();
+  }
+
   private static void selectResultTab() {
+    if (resultFilterDebounce != null && resultFilterDebounce.isRunning()) {
+      resultFilterDebounce.stop();
+      applyResultFilter();
+    }
     changingResultTab = true;
     try {
-      Component selected = resultTabs.getSelectedComponent();
+      Component selected = resultTabs == null ? null : resultTabs.getSelectedComponent();
+      displayedResult = selected instanceof JScrollPane scroll ? scroll : null;
       if (selected instanceof JScrollPane scroll && scroll.getViewport().getView() instanceof JTable table) {
         results = table;
         Object summary = scroll.getClientProperty("resultSummary");
@@ -2211,7 +2260,6 @@ public class Main {
         resultSummary.setText("  RESULTADOS");
       }
     } finally { changingResultTab = false; }
-    if (results != null) applyResultFilter();
     updatePageControls();
   }
 
@@ -2228,19 +2276,15 @@ public class Main {
     if (cursor instanceof FederatedResultCursor c) c.closeAsync();
   }
   private static void releaseOtherCursors(Component keep) {
-    if (resultTabs == null) return;
-    for (int i = 0; i < resultTabs.getTabCount(); i++) {
-      Component result = resultTabs.getComponentAt(i);
-      if (result != keep && result instanceof JScrollPane scroll) {
-        Object cursor = scroll.getClientProperty("federatedCursor");
-        scroll.putClientProperty("federatedCursor", null);
-        if (cursor instanceof FederatedResultCursor c) c.closeAsync();
+    for (JTabbedPane pane : RESULT_PANES.values()) {
+      for (Component result : pane.getComponents()) {
+        if (result != keep && result instanceof JScrollPane scroll) releaseCursor(scroll);
       }
     }
   }
 
   private static void clearSelectedResult() {
-    int index = resultTabs.getSelectedIndex();
+    int index = resultTabs == null ? -1 : resultTabs.getSelectedIndex();
     if (index < 0) { status.setText(" Nenhum resultado para fechar."); return; }
     releaseResult(resultTabs.getComponentAt(index));
     resultTabs.removeTabAt(index);
@@ -2253,38 +2297,26 @@ public class Main {
     return String.format(DISPLAY_LOCALE, "%,d", value);
   }
 
-  private static void addResultTab(DefaultTableModel model, double elapsed) {
-    JTable table = newResultTable(model);
-    JScrollPane scroll = new JScrollPane(table);
-    String summary = String.format(Locale.ROOT, "  RESULTADOS  ·  %s linhas  ·  %.2f s", formatRowCount(model.getRowCount()), elapsed);
-    scroll.putClientProperty("resultSummary", summary);
-    String title = "Resultado " + nextResultNumber++ + " (" + model.getRowCount() + ")";
-    resultTabs.addTab(title, scroll);
-    int index = resultTabs.indexOfComponent(scroll);
-    resultTabs.setTabComponentAt(index, resultTabHeader(title, scroll));
-    resultTabs.setSelectedComponent(scroll);
-    scroll.putClientProperty("resultPage", 0);
-    scroll.putClientProperty("resultHasMore", false);
-    configureColumns(table);
-    updatePageControls();
-  }
-
   // A aba de resultado representa a posicao do comando na execucao, nao o texto SQL.
-  private static void showOrUpdateResultTab(DefaultTableModel model, double elapsed, Component sqlTab,
+  private static JScrollPane showOrUpdateResultTab(DefaultTableModel model, double elapsed, Component sqlTab,
                                              String sql, int slot, int pageSize, String tabAlias) {
-    showOrUpdateResultTab(model, elapsed, sqlTab, sql, slot, pageSize, tabAlias, null);
+    return showOrUpdateResultTab(model, elapsed, sqlTab, sql, slot, pageSize, tabAlias, null);
   }
 
-  private static void showOrUpdateResultTab(DefaultTableModel model, double elapsed, Component sqlTab,
+  private static JScrollPane showOrUpdateResultTab(DefaultTableModel model, double elapsed, Component sqlTab,
       String sql, int slot, int pageSize, String tabAlias, FederatedResultCursor cursor) {
+    JTabbedPane pane = resultsFor(sqlTab);
+    if (pane == null) { if (cursor != null) cursor.closeAsync(); return null; }
     JScrollPane scroll;
-    if (slot < resultTabs.getTabCount() && resultTabs.getComponentAt(slot) instanceof JScrollPane existing) {
+    boolean newTab;
+    if (slot < pane.getTabCount() && pane.getComponentAt(slot) instanceof JScrollPane existing) {
       scroll = existing;
+      newTab = false;
+      if (displayedResult == scroll && resultFilterDebounce != null) resultFilterDebounce.stop();
       releaseResult(scroll);
     } else {
-      JTable table = newResultTable(model);
-      scroll = new JScrollPane(table);
-      resultTabs.addTab("Resultado " + (slot + 1), scroll);
+      scroll = new JScrollPane();
+      newTab = true;
     }
     JTable table = newResultTable(model);
     scroll.setViewportView(table);
@@ -2295,7 +2327,6 @@ public class Main {
     scroll.putClientProperty("resultFilter", "");
     scroll.putClientProperty("resultFilterColumn", 0);
     scroll.putClientProperty("federatedCursor", cursor);
-    scroll.putClientProperty("sqlSourceTab", sqlTab);
     scroll.putClientProperty("sqlDefaultSource", tabAlias);
     scroll.putClientProperty("sqlQueryKey", sql.trim());
     scroll.putClientProperty("resultPage", 0);
@@ -2306,14 +2337,17 @@ public class Main {
     if (pageSize == 0) scroll.putClientProperty("totalRows", (long) model.getRowCount());
     scroll.putClientProperty("pageCache", null);
     pageCache(scroll).put(0, model);
+    String title = "Resultado " + (slot + 1) + " (" + formatRowCount(model.getRowCount()) + ")";
+    // addTab pode disparar a seleção imediatamente. Publique só com a grade pronta.
+    if (newTab) pane.addTab(title, scroll);
     requestCount(scroll, sql);
-    String title = "Resultado " + (slot + 1) + " (" + model.getRowCount() + ")";
-    int idx = resultTabs.indexOfComponent(scroll);
-    resultTabs.setTitleAt(idx, title);
-    resultTabs.setTabComponentAt(idx, resultTabHeader(title, scroll));
-    resultTabs.setSelectedIndex(idx);
+    int idx = pane.indexOfComponent(scroll);
+    pane.setTitleAt(idx, title);
+    pane.setTabComponentAt(idx, resultTabHeader(title, scroll));
+    pane.setSelectedIndex(idx);
     configureColumns(table);
-    selectResultTab();
+    if (pane == resultTabs) selectResultTab();
+    return scroll;
   }
 
   private static String affectedRowsText(int affected) {
@@ -2335,31 +2369,35 @@ public class Main {
       String sql, int slot, String source, String tabAlias) {
     DefaultTableModel model = result.model() != null ? result.model()
         : commandResultModel(source, result.affected(), elapsed);
-    showOrUpdateResultTab(model, elapsed, sqlTab, sql, slot, 0, tabAlias);
-    JScrollPane scroll = (JScrollPane) resultTabs.getComponentAt(slot);
+    JScrollPane scroll = showOrUpdateResultTab(model, elapsed, sqlTab, sql, slot, 0, tabAlias);
+    if (scroll == null) return;
+    JTabbedPane pane = (JTabbedPane) scroll.getParent();
     String feedback = "Comando concluído";
     scroll.putClientProperty("commandFeedback", feedback);
     scroll.putClientProperty("resultSummary", "  COMANDO CONCLUÍDO  ·  " + source + "  ·  "
         + affectedRowsText(result.affected()) + (result.model() != null
             ? "  ·  " + formatRowCount(model.getRowCount()) + " linha(s) retornada(s)" : ""));
     String title = "Comando " + (slot + 1) + " — OK";
-    resultTabs.setTitleAt(slot, title);
-    resultTabs.setTabComponentAt(slot, resultTabHeader(title, scroll));
-    selectResultTab();
+    int index = pane.indexOfComponent(scroll);
+    pane.setTitleAt(index, title);
+    pane.setTabComponentAt(index, resultTabHeader(title, scroll));
+    if (pane == resultTabs) selectResultTab();
   }
 
-  private static void trimResultTabs(int count) {
-    while (resultTabs.getTabCount() > count) {
-      int last = resultTabs.getTabCount() - 1;
-      releaseResult(resultTabs.getComponentAt(last));
-      resultTabs.removeTabAt(last);
+  private static void trimResultTabs(Component sqlTab, int count) {
+    JTabbedPane pane = RESULT_PANES.get(sqlTab);
+    if (pane == null) return;
+    while (pane.getTabCount() > count) {
+      int last = pane.getTabCount() - 1;
+      releaseResult(pane.getComponentAt(last));
+      pane.removeTabAt(last);
     }
-    selectResultTab();
+    if (pane == resultTabs) selectResultTab();
   }
 
   // Troca o tamanho da página preservando a preferência, com proteção para "Todas".
   private static void changeRowsPerPage() {
-    if (updatingPageSizeBox || pageSizeBox == null) return;
+    if (updatingPageSizeBox || pageSizeBox == null || resultTabs == null) return;
     if (resultTabs.getSelectedComponent() instanceof JScrollPane feedback
         && feedback.getClientProperty("commandFeedback") != null) return;
     String label = String.valueOf(pageSizeBox.getSelectedItem()).trim();
@@ -2415,7 +2453,8 @@ public class Main {
   private static void updatePageControls() {
     if (previousPageButton == null || nextPageButton == null || pageLabel == null) return;
     Component selected = resultTabs == null ? null : resultTabs.getSelectedComponent();
-    JScrollPane scroll = selected instanceof JScrollPane p ? p : null;
+    JTable table = selected instanceof JScrollPane p && p.getViewport().getView() instanceof JTable grid ? grid : null;
+    JScrollPane scroll = table != null ? (JScrollPane) selected : null;
     int size = scroll == null ? preferredPageSize : resultPageSize(scroll);
     if (pageSizeBox != null) {
       pageSizeBox.setEnabled(scroll == null || scroll.getClientProperty("commandFeedback") == null);
@@ -2444,7 +2483,7 @@ public class Main {
     nextPageButton.setEnabled(pagingSupported && Boolean.TRUE.equals(scroll.getClientProperty("resultHasMore")) && !busy);
     Object totalObj = scroll.getClientProperty("totalRows");
     if (size == 0) {
-      int loaded = ((JTable) scroll.getViewport().getView()).getModel().getRowCount();
+      int loaded = table.getModel().getRowCount();
       pageLabel.setText(String.format(new Locale("pt", "BR"),
           "Página 1 de 1  ·  %,d registros", loaded));
       previousPageButton.setEnabled(false);
@@ -2472,6 +2511,7 @@ public class Main {
   }
 
   private static void changeResultPage(int direction) {
+    if (resultTabs == null) return;
     Component selected = resultTabs.getSelectedComponent();
     if (!(selected instanceof JScrollPane scroll)) return;
     if (currentQuery != null && !currentQuery.isDone()) return;
@@ -2487,7 +2527,7 @@ public class Main {
   private static void loadResultPage(JScrollPane scroll, int target) {
     if (scroll.getClientProperty("commandFeedback") != null) return;
     if (currentQuery != null && !currentQuery.isDone()) return;
-    if (resultTabs.indexOfComponent(scroll) < 0) return;
+    if (!(scroll.getParent() instanceof JTabbedPane)) return;
     Object original = scroll.getClientProperty("sqlQueryKey");
     if (!(original instanceof String sql) || sql.isBlank()) return;
     final int size = resultPageSize(scroll);
@@ -2586,7 +2626,7 @@ public class Main {
         cancelQueryButton.setEnabled(false);
         try {
           DefaultTableModel model = get();
-          if (resultTabs.indexOfComponent(scroll) < 0) { if (cursor != null) cursor.closeAsync(); return; }
+          if (!(scroll.getParent() instanceof JTabbedPane)) { if (cursor != null) cursor.closeAsync(); return; }
           scroll.putClientProperty("federatedCursor", cursor);
           if (target > 0 && model.getRowCount() == 0) {
             scroll.putClientProperty("resultHasMore", false);
@@ -2612,8 +2652,11 @@ public class Main {
 
   private static void displayPage(JScrollPane scroll, DefaultTableModel model,
                                   int page, double seconds, boolean cached) {
+    if (!(scroll.getParent() instanceof JTabbedPane pane)) return;
+    if (displayedResult == scroll && resultFilterDebounce != null) resultFilterDebounce.stop();
     JTable table = newResultTable(model);
     scroll.setViewportView(table);
+    scroll.setColumnHeaderView(table.getTableHeader());
     scroll.putClientProperty("resultPage", page);
     Object totalObj = scroll.getClientProperty("totalRows");
     int size = resultPageSize(scroll);
@@ -2637,14 +2680,12 @@ public class Main {
             formatRowCount(model.getRowCount()))
         : String.format(Locale.ROOT, "  RESULTADOS · Página %d · %s linhas · %.2f s", page + 1,
             formatRowCount(model.getRowCount()), seconds));
-    int idx = resultTabs.indexOfComponent(scroll);
-    if (idx < 0) return;
-    String title = "Resultado " + (idx + 1) + " (" + model.getRowCount() + ")";
-    resultTabs.setTitleAt(idx, title);
-    resultTabs.setTabComponentAt(idx, resultTabHeader(title, scroll));
+    int idx = pane.indexOfComponent(scroll);
+    String title = "Resultado " + (idx + 1) + " (" + formatRowCount(model.getRowCount()) + ")";
+    pane.setTitleAt(idx, title);
+    pane.setTabComponentAt(idx, resultTabHeader(title, scroll));
     configureColumns(table);
-    if (resultTabs.getSelectedComponent() == scroll) selectResultTab();
-    updatePageControls();
+    if (pane == resultTabs && pane.getSelectedComponent() == scroll) selectResultTab();
   }
 
   private static Component resultTabHeader(String title, Component content) {
@@ -2656,9 +2697,10 @@ public class Main {
     close.setMargin(new Insets(0, 4, 0, 4));
     close.setFocusable(false);
     close.addActionListener(e -> {
-      int index = resultTabs.indexOfComponent(content);
-      if (index >= 0) { releaseResult(content); resultTabs.removeTabAt(index); }
-      selectResultTab();
+      if (content.getParent() instanceof JTabbedPane pane) {
+        releaseResult(content);
+        pane.remove(content);
+      }
     });
     header.add(label);
     header.add(close);
@@ -2708,7 +2750,7 @@ public class Main {
         try {
           SqlWriteExecutor.Result result = get();
           showWriteResult(result, (System.nanoTime() - started) / 1e9, sqlTab, sql, 0, route.source(), tabAlias);
-          trimResultTabs(1);
+          trimResultTabs(sqlTab, 1);
           status.setText(" Comando concluído em " + route.source() + (result.affected() >= 0
               ? ": " + formatRowCount(result.affected()) + " registro(s) afetado(s)." : "."));
         } catch (Exception ex) {
@@ -2758,7 +2800,8 @@ public class Main {
     cancelQueryButton.setEnabled(true);
     CANCEL_REQUESTED.set(false);
     final long started = System.nanoTime();
-    status.setText(" Executando consulta...");
+    final String routeLabel = executionLabel(query, tabAlias);
+    status.setText(" Executando consulta... | " + routeLabel);
     final long[] phases = new long[3]; // conexão, execução SQL, leitura
     currentQuery = new SwingWorker<DefaultTableModel, Void>() {
       private FederatedResultCursor cursor;
@@ -2825,14 +2868,14 @@ public class Main {
           DefaultTableModel model = get();
           double elapsed = (System.nanoTime() - started) / 1_000_000_000.0;
           showOrUpdateResultTab(model, elapsed, sqlTab, query, 0, pageSize, tabAlias, cursor);
-          trimResultTabs(1);
+          trimResultTabs(sqlTab, 1);
           String details = String.format(Locale.ROOT,
               "Conexão %.2f s | SQL %.2f s | Leitura %.2f s",
               phases[0] / 1e9, phases[1] / 1e9, phases[2] / 1e9);
           status.setText(" Consulta: " + formatRowCount(model.getRowCount()) + " linhas em "
               + String.format(Locale.ROOT, "%.2f s", elapsed) + " | " + details
-              + " | " + executionLabel(query, tabAlias));
-          status.setToolTipText(details + " | " + executionLabel(query, tabAlias));
+              + " | " + routeLabel);
+          status.setToolTipText(details + " | " + routeLabel);
         } catch (Exception ex) {
           if (cursor != null) cursor.closeAsync();
           if (CANCEL_REQUESTED.get()) status.setText(" Consulta cancelada. Resultados anteriores preservados.");
@@ -2973,7 +3016,7 @@ public class Main {
         executeScriptButton.setEnabled(true);
         cancelQueryButton.setEnabled(false);
         if (CANCEL_REQUESTED.get()) { status.setText(" Script cancelado. Resultados concluidos preservados."); return; }
-        try { get(); trimResultTabs(resultSlot); status.setText(" Script concluido: " + commands.size() + " comando(s)."); }
+        try { get(); trimResultTabs(sqlTab, resultSlot); status.setText(" Script concluido: " + commands.size() + " comando(s)."); }
         catch (Exception ex) { status.setText(" Script interrompido por erro. Resultados anteriores preservados."); showError(ex); }
       }
     };

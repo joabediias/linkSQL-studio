@@ -42,6 +42,7 @@ final class ConnectionManagerDialog extends JDialog {
   private final JCheckBox trustSqlServer = new JCheckBox("<html>Confiar no certificado do SQL Server<br>(somente ambientes confiáveis)</html>");
   private final JCheckBox legacyFirebird = new JCheckBox("<html>Compatibilidade Firebird antigo<br>(enableProtocol=*)</html>");
   private final JLabel credentialHint = new JLabel("Senha ainda não cadastrada");
+  private final JLabel databaseCaption = LinkSqlDialogStyle.caption("Banco / serviço / arquivo");
   private final JButton saveButton = new JButton("Salvar conexão"), testButton = new JButton("Testar conexão"),
       removeButton = new JButton("Excluir"), resetPassword = new JButton("Esquecer senha"),
       duplicateButton = new JButton("Duplicar");
@@ -245,7 +246,9 @@ final class ConnectionManagerDialog extends JDialog {
     c.weightx = .20; c.gridx = 2; c.insets = new Insets(0, 0, 0, 0);
     connection.add(fieldGroup("Porta", port), c);
     basicFields.add(connection);
-    basicFields.add(fieldPair("Banco / serviço / arquivo", database, "Usuário", username));
+    JPanel databaseAndUser = fieldPair("", database, "Usuário", username);
+    ((JPanel) databaseAndUser.getComponent(0)).add(databaseCaption, BorderLayout.NORTH);
+    basicFields.add(databaseAndUser);
     basicFields.add(fieldGroup("Senha", password));
     credentialHint.setFont(new Font("Segoe UI", Font.PLAIN, 12));
     credentialHint.setForeground(LinkSqlVisualStyle.subtleText());
@@ -521,6 +524,11 @@ final class ConnectionManagerDialog extends JDialog {
 
   private void updateDatabaseSpecificFields() {
     SqlDatabaseType chosen = (SqlDatabaseType) databaseType.getSelectedItem();
+    boolean mysql = chosen == SqlDatabaseType.MYSQL;
+    databaseCaption.setText(mysql ? "Banco (opcional)" : "Banco / serviço / arquivo");
+    database.putClientProperty("JTextField.placeholderText", mysql ? "Vazio: todos os bancos acessíveis" : null);
+    database.setToolTipText(mysql ? "Para explorar todos os bancos, deixe Banco e Schema vazios." : null);
+    schema.setToolTipText(mysql ? "Preencha apenas se quiser limitar a conexão a um banco específico." : null);
     trustSqlServer.setEnabled(chosen == SqlDatabaseType.SQLSERVER);
     legacyFirebird.setEnabled(chosen == SqlDatabaseType.FIREBIRD);
   }

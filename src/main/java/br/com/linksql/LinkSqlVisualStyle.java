@@ -309,6 +309,10 @@ final class LinkSqlVisualStyle {
         panel.setBackground(surface());
         panel.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, border()));
       }
+      case "resultsToolbar" -> {
+        panel.setBackground(surface());
+        panel.setBorder(BorderFactory.createEmptyBorder(1, 6, 1, 6));
+      }
       case "status" -> {
         panel.setBackground(surface());
         panel.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, border()));
@@ -350,7 +354,7 @@ final class LinkSqlVisualStyle {
 
   static void resultsTable(JTable table) {
     table.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-    table.setRowHeight(30);
+    table.setRowHeight(22);
     table.setShowGrid(false);
     table.setIntercellSpacing(new Dimension(0, 0));
     table.setSelectionBackground(rowSelection());
@@ -361,7 +365,7 @@ final class LinkSqlVisualStyle {
     header.setBackground(dark ? color("#1C2027") : color("#F0F3F7"));
     header.setForeground(text());
     header.setFont(new Font("Segoe UI", Font.BOLD, 12));
-    header.setPreferredSize(new Dimension(header.getPreferredSize().width, 35));
+    header.setPreferredSize(new Dimension(header.getPreferredSize().width, 26));
   }
 
   static void splitter(JSplitPane split) {

@@ -44,7 +44,9 @@ final class SqlConnectionRegistry {
   synchronized List<String> mysqlSourceNames() {
     List<String> names = new ArrayList<>();
     for (JdbcConnectionProfile profile : profiles.values())
-      if (profile.type() == SqlDatabaseType.MYSQL) names.add(profile.name());
+      if (profile.type() == SqlDatabaseType.MYSQL && !profile.mysqlAllCatalogs()
+          && (profile.schemaForCalcite() == null || DatabaseCatalog.same(profile.schema(), profile.database())))
+        names.add(profile.name());
     return names;
   }
 
@@ -143,7 +145,7 @@ final class SqlConnectionRegistry {
     // SELECT constante nao precisa tentar abrir todos os servidores.
     if (lazyConnections && FederatedQuerySupport.analyze(sql, profilesSnapshot).sources().isEmpty())
       needed = Set.of();
-    Connection connection = DriverManager.getConnection("jdbc:calcite:caseSensitive=false");
+    Connection connection = openCalciteConnection();
     try {
       SchemaPlus schemas = connection.unwrap(CalciteConnection.class).getRootSchema();
       // Carrega uma origem por vez, sem travar o monitor durante o pedido de senha.
@@ -160,8 +162,21 @@ final class SqlConnectionRegistry {
     }
   }
 
-  private static void addCalciteSchema(SchemaPlus schemas, JdbcConnectionProfile profile,
-                                       BasicDataSource ds) {
+  static Connection openCalciteConnection() throws SQLException {
+    Connection connection = DriverManager.getConnection(
+        "jdbc:calcite:caseSensitive=false;fun=mysql;parserFactory="
+            + FederatedMysqlCompatibility.class.getName());
+    try {
+      FederatedMysqlCompatibility.register(connection.unwrap(CalciteConnection.class).getRootSchema());
+      return connection;
+    } catch (SQLException | RuntimeException ex) {
+      try { connection.close(); } catch (SQLException close) { ex.addSuppressed(close); }
+      throw ex;
+    }
+  }
+
+  static void addCalciteSchema(SchemaPlus schemas, JdbcConnectionProfile profile,
+                               javax.sql.DataSource ds) throws SQLException {
     javax.sql.DataSource streaming = new FederatedStreamingDataSource(ds, profile.type());
     String catalog = switch (profile.type()) {
       case SQLSERVER, POSTGRESQL -> profile.database();
@@ -173,8 +188,30 @@ final class SqlConnectionRegistry {
     if (profile.type() == SqlDatabaseType.FIREBIRD) {
       schemas.add(profile.name(), JdbcSchema.create(schemas, profile.name(), streaming,
           FirebirdCompatDialect.FACTORY, catalog, profile.schemaForCalcite()));
+    } else if (profile.type() == SqlDatabaseType.MYSQL) {
+      String selected = profile.schemaForCalcite();
+      if (profile.mysqlAllCatalogs()) {
+        List<DatabaseCatalog.Namespace> catalogs;
+        String current;
+        try (Connection connection = ds.getConnection()) {
+          catalogs = DatabaseCatalog.namespaces(connection, profile);
+          current = connection.getCatalog();
+        }
+        // A URL personalizada pode selecionar um padrão. Preserve o atalho
+        // CONEXÃO.tabela nesse caso, mas exponha cada banco pelo nome também.
+        SchemaPlus source = schemas.add(profile.name(), current == null || current.isBlank()
+            ? new org.apache.calcite.schema.impl.AbstractSchema()
+            : JdbcSchema.create(schemas, profile.name(), streaming, MysqlCompatDialect.FACTORY, current, null));
+        for (DatabaseCatalog.Namespace scope : catalogs) {
+          String name = scope.catalog();
+          if (name != null && !name.isBlank())
+            source.add(name, JdbcSchema.create(source, name, streaming, MysqlCompatDialect.FACTORY, name, null));
+        }
+      } else {
+        schemas.add(profile.name(), JdbcSchema.create(schemas, profile.name(), streaming,
+            MysqlCompatDialect.FACTORY, selected, null));
+      }
     } else {
-      // Mesmo caminho da versao 2.6: nenhuma alteracao nos outros fornecedores.
       schemas.add(profile.name(), JdbcSchema.create(schemas, profile.name(), streaming,
           catalog, profile.schemaForCalcite()));
     }
@@ -194,7 +231,7 @@ final class SqlConnectionRegistry {
     JsonNode root = JSON.readTree(Files.readString(path));
     Map<String, BasicDataSource> nextSources = new LinkedHashMap<>();
     Map<String, JdbcConnectionProfile> nextProfiles = new LinkedHashMap<>();
-    Connection next = DriverManager.getConnection("jdbc:calcite:caseSensitive=false");
+    Connection next = openCalciteConnection();
     try {
       SchemaPlus schemas = next.unwrap(CalciteConnection.class).getRootSchema();
       Set<String> names = new HashSet<>();

@@ -1,0 +1,38 @@
+name: Testes REGEXP_REPLACE local
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/main/java/br/com/linksql/FederatedMysqlCompatibility.java'
+      - 'src/main/java/br/com/linksql/SingleServerSqlRouter.java'
+      - 'src/test/java/br/com/linksql/LinkSqlRelease40RegressionTest.java'
+      - '.github/workflows/regexp-replace-local.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  regressao:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Compilar classes e testes
+        run: mvn -B test-compile
+      - name: Montar classpath
+        run: mvn -B org.apache.maven.plugins:maven-dependency-plugin:3.6.1:build-classpath -Dmdep.includeScope=test -Dmdep.outputFile=target/classpath.txt
+      - name: Rodar regressao de roteamento
+        shell: pwsh
+        run: |
+          $deps = (Get-Content target/classpath.txt -Raw).Trim()
+          $cp = "target/test-classes;target/classes;$deps"
+          java -cp $cp br.com.linksql.LinkSqlCoreRegressionTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          java -cp $cp br.com.linksql.LinkSqlRelease40RegressionTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

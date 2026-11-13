@@ -271,6 +271,34 @@ public final class LinkSqlRelease40RegressionTest {
     }
   }
 
+  private static void regexpReplaceLocal() throws Exception {
+    check("123456789".equals(FederatedMysqlCompatibility.regexpReplace(
+        "12.345-A/678 9", "[^0-9]", "")), "regex remove todos os caracteres nao numericos");
+    check(FederatedMysqlCompatibility.regexpReplace(null, "[^0-9]", "") == null,
+        "regex preserva NULL");
+    check("abc-123".equals(FederatedMysqlCompatibility.regexpReplace(
+        "abc123", "[0-9]+", "-123")), "regex usa substituicao literal");
+    check(SqlQueryPlanner.directSql(
+        "SELECT REGEXP_REPLACE(c.CLI_INSC, '[^0-9]', '') FROM SRV_MATRIZ.CAD_CLI0 c",
+        List.of("SRV_MATRIZ")) == null, "regex nunca usa roteamento direto ao MySQL 5.7");
+    check(SqlQueryPlanner.directSql(
+        "SELECT 'REGEXP_REPLACE(x)' AS texto FROM SRV_MATRIZ.CAD_CLI0 c",
+        List.of("SRV_MATRIZ")) != null, "regex em literal nao bloqueia roteamento nativo");
+    String sql = """
+        SELECT REGEXP_REPLACE('12.345/678-90*', '[^0-9]', '') AS DOCUMENTO,
+               REGEXP_REPLACE(CAST(NULL AS VARCHAR(10)), '[^0-9]', '') AS NULO,
+               LINKSQL_REGEXP_REPLACE('ISENTO', '[^0-9]', '') AS ISENTO
+        FROM FACT.ITEMS f WHERE f.ID = 1
+        """;
+    try (Connection c = calcite(); Statement statement = c.createStatement();
+         ResultSet rs = statement.executeQuery(sql)) {
+      check(rs.next(), "UDF local retorna linha");
+      check("1234567890".equals(rs.getString("DOCUMENTO")), "regex processada pelo Calcite");
+      check(rs.getString("NULO") == null, "UDF retorna NULL para entrada nula");
+      check("".equals(rs.getString("ISENTO")), "alias explicito local funciona");
+    }
+  }
+
   private static void cursorsAndBenchmark() throws Exception {
     String sql="SELECT f.ID, d.NAME FROM FACT.ITEMS f JOIN DIM.LOOKUP d ON f.GROUP_ID=d.ID ORDER BY f.ID";
     // Aquecimento comum, excluído da medição.
@@ -483,7 +511,7 @@ public final class LinkSqlRelease40RegressionTest {
     String original=System.getProperty("user.home");System.setProperty("user.home",home.toString());
     try {
       policyAndTransfer(home);transactionsAndStreaming();federatedConcatenation();federatedCustomerExport();
-      federatedSupplierExport();cursorsAndBenchmark();alwaysCountFederated();mysqlCatalogDiscovery();commandFeedback();
+      federatedSupplierExport();regexpReplaceLocal();cursorsAndBenchmark();alwaysCountFederated();mysqlCatalogDiscovery();commandFeedback();
       System.out.println("LinkSQL 4.0.0: "+checks+" verificações de escrita, transferência, cancelamento e paginação APROVADAS.");
     } finally {
       System.setProperty("user.home",original);

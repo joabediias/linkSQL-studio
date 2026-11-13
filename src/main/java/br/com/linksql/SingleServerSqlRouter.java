@@ -45,6 +45,11 @@ final class SingleServerSqlRouter {
         // Em SQL federado || concatena, mas o MySQL pode interpretá-lo como OR.
         if (next.kind() == Kind.OTHER && next.value().equals("|") && next.start() == t.end()) return null;
       }
+      // REGEXP_REPLACE precisa rodar na JVM: MySQL 5.7 nao a oferece
+      // nativamente e pode conter uma rotina homonima sem permissao EXECUTE.
+      if ((t.word("REGEXP_REPLACE") || t.word("LINKSQL_REGEXP_REPLACE"))
+          && i + 1 < tokens.size() && tokens.get(i + 1).kind() == Kind.LPAREN)
+        return null;
       if (t.kind() == Kind.RPAREN) selectDepths.remove(t.depth() + 1);
       if (t.word("SELECT")) {
         selectDepths.add(t.depth());

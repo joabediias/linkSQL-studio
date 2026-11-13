@@ -26,7 +26,7 @@ jobs:
       - name: Compilar classes e testes
         run: mvn -B test-compile
       - name: Montar classpath
-        run: mvn -B org.apache.maven.plugins:maven-dependency-plugin:3.6.1:build-classpath -Dmdep.includeScope=test -Dmdep.outputFile=target/classpath.txt
+        run: mvn -B 'org.apache.maven.plugins:maven-dependency-plugin:3.6.1:build-classpath' '-Dmdep.includeScope=test' '-Dmdep.outputFile=target/classpath.txt'
       - name: Rodar regressao de roteamento
         shell: pwsh
         run: |

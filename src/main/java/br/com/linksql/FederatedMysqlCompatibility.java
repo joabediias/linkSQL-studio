@@ -33,6 +33,8 @@ import org.apache.calcite.sql.util.SqlShuttle;
 /** Extensões MySQL usadas no SQL federado que o Calcite não registra por padrão. */
 public final class FederatedMysqlCompatibility implements SqlParserImplFactory {
   private static final String CONCAT_WS_IMPL = "LINKSQL_CONCAT_WS";
+  private static final String REGEXP_REPLACE_IMPL = "LINKSQL_REGEXP_REPLACE";
+  private static final String LPAD_IMPL = "LINKSQL_LPAD";
   private static final Pattern REGEXP = Pattern.compile(
       "'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`|/\\*[\\s\\S]*?\\*/|--[^\\r\\n]*"
           + "|(?<![\\p{L}\\p{N}_$])REGEXP(?![\\p{L}\\p{N}_$])",
@@ -50,7 +52,10 @@ public final class FederatedMysqlCompatibility implements SqlParserImplFactory {
   static void register(SchemaPlus schema) {
     schema.add("DATE_FORMAT", ScalarFunctionImpl.create(FederatedMysqlCompatibility.class, "dateFormat"));
     schema.add("RPAD", ScalarFunctionImpl.create(FederatedMysqlCompatibility.class, "rpad"));
+    schema.add(LPAD_IMPL, ScalarFunctionImpl.create(FederatedMysqlCompatibility.class, "lpad"));
     schema.add(CONCAT_WS_IMPL, ScalarFunctionImpl.create(FederatedMysqlCompatibility.class, "concatWs"));
+    // Executado pelo Calcite/Java, sem exigir EXECUTE na rotina MySQL 5.7.
+    schema.add(REGEXP_REPLACE_IMPL, ScalarFunctionImpl.create(FederatedMysqlCompatibility.class, "regexpReplace"));
   }
 
   @Override public SqlAbstractParserImpl getParser(Reader stream) {
@@ -81,6 +86,19 @@ public final class FederatedMysqlCompatibility implements SqlParserImplFactory {
     return new SqlShuttle() {
       @Override public SqlNode visit(SqlCall node) {
         SqlCall call = (SqlCall) super.visit(node);
+        // Evita que o MySQL 5.7 receba REGEXP_REPLACE e corrige a assinatura
+        // restrita de LPAD no Calcite quando ambos aparecem no mesmo SELECT.
+        // Mantemos os nomes originais no SQL do editor.
+        if (call.operandCount() == 3 && call.getFunctionQuantifier() == null
+            && (call.getOperator().getName().equalsIgnoreCase("REGEXP_REPLACE")
+                || call.getOperator().getName().equalsIgnoreCase("LPAD"))) {
+          var pos = call.getParserPosition();
+          String local = call.getOperator().getName().equalsIgnoreCase("LPAD")
+              ? LPAD_IMPL : REGEXP_REPLACE_IMPL;
+          return new SqlUnresolvedFunction(new SqlIdentifier(local, pos),
+              null, null, null, null, SqlFunctionCategory.USER_DEFINED_FUNCTION)
+              .createCall(pos, call.getOperandList().toArray(SqlNode[]::new));
+        }
         if (!(call.getOperator() instanceof SqlUnresolvedFunction function)
             || !function.getNameAsId().isSimple() || !function.getName().equalsIgnoreCase("CONCAT_WS")
             || call.operandCount() < 2 || call.getFunctionQuantifier() != null) return call;
@@ -137,10 +155,36 @@ public final class FederatedMysqlCompatibility implements SqlParserImplFactory {
     return result.toString();
   }
 
+  /** Compativel com LPAD MySQL, inclusive CHAR como entrada e zeros a esquerda. */
+  public static String lpad(String value, Integer length, String padding) {
+    if (value == null || length == null || padding == null || length < 0) return null;
+    if (padding.isEmpty() && value.length() < length) return null;
+    return SqlFunctions.lpad(value, length, padding);
+  }
+
   public static String rpad(String value, Integer length, String padding) {
     if (value == null || length == null || padding == null || length < 0) return null;
     if (padding.isEmpty() && value.length() < length) return null;
     return SqlFunctions.rpad(value, length, padding);
+  }
+
+  /**
+   * Substituicao regex local (sintaxe Java Pattern). O texto de substituicao e
+   * literal, de modo que '
+    if (separator == null || values == null) return null;
+    StringJoiner result = new StringJoiner(separator);
+    for (Object value : values) {
+      if (value != null) result.add(value.toString());
+    }
+    return result.toString();
+  }
+}
+ e '\\' nao precisam ser escapados ao limpar dados.
+   */
+  public static String regexpReplace(String value, String expression, String replacement) {
+    if (value == null || expression == null || replacement == null) return null;
+    return Pattern.compile(expression).matcher(value)
+        .replaceAll(java.util.regex.Matcher.quoteReplacement(replacement));
   }
 
   public static String concatWs(String separator, List<?> values) {

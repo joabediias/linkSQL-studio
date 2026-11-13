@@ -276,6 +276,12 @@ public final class LinkSqlRelease40RegressionTest {
         "12.345-A/678 9", "[^0-9]", "")), "regex remove todos os caracteres nao numericos");
     check(FederatedMysqlCompatibility.regexpReplace(null, "[^0-9]", "") == null,
         "regex preserva NULL");
+    check("000012345".equals(FederatedMysqlCompatibility.lpad("12345", 9, "0")),
+        "LPAD local completa com zeros");
+    check("12".equals(FederatedMysqlCompatibility.lpad("12345", 2, "0")),
+        "LPAD local trunca quando menor");
+    check(FederatedMysqlCompatibility.lpad(null, 14, "0") == null,
+        "LPAD local preserva NULL");
     check("abc-123".equals(FederatedMysqlCompatibility.regexpReplace(
         "abc123", "[0-9]+", "-123")), "regex usa substituicao literal");
     check(SqlQueryPlanner.directSql(
@@ -287,7 +293,12 @@ public final class LinkSqlRelease40RegressionTest {
     String sql = """
         SELECT REGEXP_REPLACE('12.345/678-90*', '[^0-9]', '') AS DOCUMENTO,
                REGEXP_REPLACE(CAST(NULL AS VARCHAR(10)), '[^0-9]', '') AS NULO,
-               LINKSQL_REGEXP_REPLACE('ISENTO', '[^0-9]', '') AS ISENTO
+               LINKSQL_REGEXP_REPLACE('ISENTO', '[^0-9]', '') AS ISENTO,
+               LPAD(REGEXP_REPLACE('12.345/678-90*', '[^0-9]', ''), 14, '0') AS CNPJ,
+               CASE WHEN f.ID = 1
+                 THEN LPAD(REGEXP_REPLACE('123.45', '[^0-9]', ''), 11, '0')
+                 ELSE '' END AS CPF,
+               LPAD(TRIM(CAST(' 123 ' AS CHAR(5))), 6, '0') AS DOCUMENTO_CHAR
         FROM FACT.ITEMS f WHERE f.ID = 1
         """;
     try (Connection c = calcite(); Statement statement = c.createStatement();
@@ -296,6 +307,9 @@ public final class LinkSqlRelease40RegressionTest {
       check("1234567890".equals(rs.getString("DOCUMENTO")), "regex processada pelo Calcite");
       check(rs.getString("NULO") == null, "UDF retorna NULL para entrada nula");
       check("".equals(rs.getString("ISENTO")), "alias explicito local funciona");
+      check("00001234567890".equals(rs.getString("CNPJ")), "LPAD e REGEXP_REPLACE funcionam juntos");
+      check("00000012345".equals(rs.getString("CPF")), "CASE com LPAD no SQL de clientes");
+      check("000123".equals(rs.getString("DOCUMENTO_CHAR")), "LPAD aceita argumento CHAR");
     }
   }
 

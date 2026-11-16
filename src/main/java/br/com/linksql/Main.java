@@ -582,6 +582,10 @@ public class Main {
 
     JMenu resultMenu = new JMenu("Resultados");
     addMenuAction(resultMenu, "Exportar CSV", export);
+    JMenuItem bigExport = new JMenuItem("Exportar CSV automatizado (grandes volumes)...");
+    bigExport.addActionListener(e -> LargeCsvExportDialog.open(frame, CONNECTIONS,
+        activeEditor().getText(), defaultUserFile("CLIENTES.csv").toPath()));
+    resultMenu.add(bigExport);
     JMenuItem copyHeader = new JMenuItem("Copiar selecao com cabecalho (Ctrl+Shift+C)");
     copyHeader.addActionListener(e -> { if (results != null) copySelectedResults(results, true); });
     resultMenu.add(copyHeader);

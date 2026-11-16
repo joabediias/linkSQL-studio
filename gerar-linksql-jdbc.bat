@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 
-rem LinkSQL JDBC 0.6 - verifica a estrutura antes de compilar.
+rem LinkSQL JDBC 0.7 - verifica a estrutura antes de compilar.
 set "RAIZ=%~dp0"
 set "SCRIPT=%RAIZ%ferramentas\gerar-linksql-jdbc.ps1"
 set "MODULO=%RAIZ%integracao\linksql-jdbc\pom.xml"
@@ -61,7 +61,7 @@ if not "%RET%"=="0" (
 )
 
 echo.
-echo SUCESSO: confira target\linksql-jdbc\linksql-jdbc-bundle-0.6.jar
+echo SUCESSO: confira target\linksql-jdbc\linksql-jdbc-bundle-0.7.jar
 popd
 pause
 exit /b 0

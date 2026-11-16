@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   portatil-windows:
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'fix/roteamento-consultas-mysql'
+    if: github.event.pull_request.head.repo.full_name == github.repository && (github.event.pull_request.head.ref == 'fix/roteamento-consultas-mysql' || github.event.pull_request.head.ref == 'feat/exportacao-csv-incremental')
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
@@ -28,11 +28,31 @@ jobs:
       - name: Compilar e gerar a pasta portátil
         shell: powershell
         run: .\distribuicao\gerar-windows.ps1 -SomentePortatil -SemZip
+      - name: Validar marcadores de exportacao incremental
+        shell: powershell
+        run: |
+          $cp = 'target\test-classes;target\classes;target\distribuicao-input\lib\*'
+          & java '-Djava.awt.headless=true' '-cp' $cp 'br.com.linksql.LargeCsvExportRegressionTest'
+      - name: Testar faixas do JDBC incremental
+        shell: powershell
+        run: |
+          $cp = 'target\test-classes;target\classes;target\distribuicao-input\lib\*'
+          & java '-Djava.awt.headless=true' '-cp' $cp 'br.com.linksql.JdbcBatchRangesRegressionTest'
       - name: Disponibilizar o executável com as dependências
         uses: actions/upload-artifact@v4
         with:
-          name: LinkSQL-4.0.0-PR1-portatil-windows-x64
+          name: LinkSQL-4.0.0-exportacao-CSV-portatil-windows-x64
           path: target/distribuicao/
           if-no-files-found: error
           include-hidden-files: true
+          retention-days: 14
+      - name: Compilar LinkSQL JDBC 0.7 para exportador externo
+        shell: powershell
+        run: .\ferramentas\gerar-linksql-jdbc.ps1
+      - name: Publicar JAR JDBC experimental
+        uses: actions/upload-artifact@v4
+        with:
+          name: LinkSQL-JDBC-0.7-faixas-ocupadas
+          path: target/linksql-jdbc/
+          if-no-files-found: error
           retention-days: 14

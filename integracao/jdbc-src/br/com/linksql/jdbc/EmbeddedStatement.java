@@ -1,6 +1,7 @@
 package br.com.linksql.jdbc;
 
 import br.com.linksql.LinkSqlEmbeddedEngine;
+import br.com.linksql.LinkSqlBatchedResultSet;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -18,6 +19,7 @@ final class EmbeddedStatement implements InvocationHandler {
   private Statement proxy;
   private Connection activeConnection;
   private Statement activeStatement;
+  private ResultSet incrementalResult;
   private int fetchSize = 500;
   private int timeout = 120;
   private int maxRows = 0;
@@ -41,6 +43,10 @@ final class EmbeddedStatement implements InvocationHandler {
 
   private void closeActive() throws SQLException {
     SQLException failure = null;
+    if (incrementalResult != null) {
+      try { incrementalResult.close(); } catch (SQLException ex) { failure = ex; }
+      incrementalResult = null;
+    }
     if (activeStatement != null) {
       try { activeStatement.close(); } catch (SQLException ex) { failure = ex; }
       activeStatement = null;
@@ -59,6 +65,10 @@ final class EmbeddedStatement implements InvocationHandler {
   private ResultSet execute(String sql) throws SQLException {
     ensureOpen();
     closeActive();
+    if (sql.contains("LINKSQL_LOTE:")) {
+      incrementalResult = LinkSqlBatchedResultSet.execute(engine, sql, proxy, timeout, fetchSize, maxRows);
+      return incrementalResult;
+    }
     LinkSqlEmbeddedEngine.Query query = engine.plan(sql);
     activeConnection = query.connection();
     try {
@@ -88,7 +98,8 @@ final class EmbeddedStatement implements InvocationHandler {
     switch (name) {
       case "executeQuery": return execute((String) args[0]);
       case "execute": { execute((String) args[0]); return true; }
-      case "getResultSet": return activeStatement == null ? null : activeStatement.getResultSet();
+      case "getResultSet": return incrementalResult != null ? incrementalResult
+          : activeStatement == null ? null : activeStatement.getResultSet();
       case "getMoreResults": return false;
       case "getUpdateCount": return -1;
       case "getLargeUpdateCount": return -1L;
@@ -106,7 +117,11 @@ final class EmbeddedStatement implements InvocationHandler {
       case "setFetchDirection": if ((Integer) args[0] != ResultSet.FETCH_FORWARD) throw new SQLFeatureNotSupportedException(); return null;
       case "getWarnings": return activeStatement == null ? null : activeStatement.getWarnings();
       case "clearWarnings": if (activeStatement != null) activeStatement.clearWarnings(); return null;
-      case "cancel": if (activeStatement != null) activeStatement.cancel(); return null;
+      case "cancel": {
+        if (incrementalResult != null) LinkSqlBatchedResultSet.cancel(incrementalResult);
+        if (activeStatement != null) activeStatement.cancel();
+        return null;
+      }
       case "closeOnCompletion": if (activeStatement != null) activeStatement.closeOnCompletion(); return null;
       case "isCloseOnCompletion": return activeStatement != null && activeStatement.isCloseOnCompletion();
       case "unwrap": {

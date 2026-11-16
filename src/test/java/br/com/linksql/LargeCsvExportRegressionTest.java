@@ -22,7 +22,20 @@ public final class LargeCsvExportRegressionTest {
     try { new LargeCsvExport.Config("CAD_CLI0;DROP", "CLI_CODIGO", 6, 3, 250, ';'); }
     catch (IllegalArgumentException ex) { rejected = true; }
     require(rejected, "identificador inseguro aceito");
-    System.out.println("OK: particionamento SQL, marcadores e validacao de identificadores");
+    try (java.sql.Connection conn = java.sql.DriverManager.getConnection("jdbc:calcite:fun=mysql;caseSensitive=false");
+         java.sql.Statement st = conn.createStatement()) {
+      try (java.sql.ResultSet rs = st.executeQuery(
+          "SELECT REGEXP_REPLACE('', '[^0-9]', '') AS VALOR")) {
+        require(rs.next() && "".equals(rs.getString(1)), "Calcite falhou em REGEXP_REPLACE('')");
+      }
+      try (java.sql.ResultSet rs = st.executeQuery(
+          "SELECT REGEXP_REPLACE('12.345-67', '[^0-9]', '') AS VALOR")) {
+        require(rs.next() && "1234567".equals(rs.getString(1)), "Calcite alterou limpeza numerica");
+      }
+    } catch (Exception ex) {
+      throw new AssertionError("Calcite deve aceitar REGEXP_REPLACE sobre texto vazio", ex);
+    }
+    System.out.println("OK: particionamento SQL, marcadores e Calcite REGEXP_REPLACE");
   }
   private static void require(boolean b, String msg) { if (!b) throw new AssertionError(msg); }
 }

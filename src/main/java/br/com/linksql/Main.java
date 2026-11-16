@@ -2601,7 +2601,7 @@ public class Main {
           if (pushedSql != null) stmt.setMaxRows(0);
           else if (nativeWindow != null) NativeJdbcPaging.configure(stmt, nativeWindow);
           else stmt.setMaxRows(size);
-          stmt.setQueryTimeout(120);
+          stmt.setQueryTimeout(SqlQueryTimeout.seconds());
           if (nativeWindow == null) configureFetch(stmt, sql, size);
           try (ResultSet rs = stmt.executeQuery(pagedSql)) {
             return pushedSql != null ? SqlResultModels.readResultModel(rs, nativeWindow.amount(), this::isCancelled)
@@ -2831,7 +2831,7 @@ public class Main {
           if (pushedSql != null) stmt.setMaxRows(0);
           else if (nativeWindow != null) NativeJdbcPaging.configure(stmt, nativeWindow);
           else stmt.setMaxRows(pageSize);
-          stmt.setQueryTimeout(120);
+          stmt.setQueryTimeout(SqlQueryTimeout.seconds());
           if (nativeWindow == null) configureFetch(stmt, query, pageSize);
           long sqlStarted = System.nanoTime();
           try (ResultSet rs = stmt.executeQuery(pushedSql != null ? pushedSql : firstPageSql(query, pageSize, tabAlias))) {
@@ -2968,7 +2968,7 @@ public class Main {
             if (pushedSql != null) stmt.setMaxRows(0);
             else if (nativeWindow != null) NativeJdbcPaging.configure(stmt, nativeWindow);
             else stmt.setMaxRows(pageSize);
-            stmt.setQueryTimeout(120);
+            stmt.setQueryTimeout(SqlQueryTimeout.seconds());
             if (nativeWindow == null) configureFetch(stmt, sql, pageSize);
             boolean hasResult = stmt.execute(pushedSql != null ? pushedSql
                 : isPageableSql(sql) ? firstPageSql(sql, pageSize, tabAlias) : executableSql(sql));

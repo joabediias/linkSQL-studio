@@ -29,6 +29,8 @@ public final class LinkSqlBatchedResultSet implements InvocationHandler {
   private ResultSetMetaData metadata;
   private int index;
   private long rowNumber;
+  private long chunkRows;
+  private long chunkStarted;
   private boolean validRow;
   private boolean closed;
   private ResultSet proxy;
@@ -43,19 +45,20 @@ public final class LinkSqlBatchedResultSet implements InvocationHandler {
     this.maxRows = maxRows;
     Matcher directive = DECLARATION.matcher(sql);
     String table = "CAD_CLI0", column = "CLI_CODIGO";
-    int batchSize = 100;
+    int batchSize = 250;
     if (directive.find()) {
       table = directive.group(1);
       column = directive.group(2);
       batchSize = Integer.parseInt(directive.group(3));
     }
     try {
-      ranges = LargeCsvExport.jdbcRanges(engine.registryForBatches(), sql, table, column, batchSize);
+      ranges = JdbcBatchRanges.discover(engine.registryForBatches(), sql, table, column, batchSize);
     } catch (Exception ex) {
       throw new SQLException("Nao foi possivel localizar faixas de codigos: " + ex.getMessage(), "HY000", ex);
     }
     proxy = (ResultSet) Proxy.newProxyInstance(LinkSqlBatchedResultSet.class.getClassLoader(),
         new Class<?>[]{ResultSet.class}, this);
+    JdbcBatchRanges.log("Iniciando cursor incremental com " + ranges.size() + " faixas; sem carregar CSV na memoria");
     // Metadata must be available before calling next(), including empty first chunks.
     try {
       openNextChunk();
@@ -83,8 +86,20 @@ public final class LinkSqlBatchedResultSet implements InvocationHandler {
   private void openNextChunk() throws SQLException {
     if (index >= ranges.size()) return;
     String[] bound = ranges.get(index++);
+    chunkStarted = System.nanoTime();
+    chunkRows = 0;
+    JdbcBatchRanges.log("Lote " + index + "/" + ranges.size()
+        + " [" + bound[0] + "-" + bound[1] + "]: planejando consulta...");
     String sql = LargeCsvExport.partition(template, bound[0], bound[1]);
-    LinkSqlEmbeddedEngine.Query query = engine.plan(sql);
+    LinkSqlEmbeddedEngine.Query query;
+    try {
+      query = engine.plan(sql);
+    } catch (SQLException | RuntimeException ex) {
+      JdbcBatchRanges.log("ERRO no planejamento do lote " + index + ": " + ex.getMessage());
+      throw ex;
+    }
+    JdbcBatchRanges.log("Lote " + index + ": plano pronto em "
+        + ((System.nanoTime() - chunkStarted) / 1_000_000) + " ms; executando...");
     connection = query.connection();
     try {
       statement = connection.createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
@@ -92,7 +107,10 @@ public final class LinkSqlBatchedResultSet implements InvocationHandler {
       if (fetchSize > 0) statement.setFetchSize(fetchSize);
       current = statement.executeQuery(query.sql());
       if (metadata == null) metadata = current.getMetaData();
+      JdbcBatchRanges.log("Lote " + index + ": resultado JDBC aberto em "
+          + ((System.nanoTime() - chunkStarted) / 1_000_000) + " ms; lendo linhas...");
     } catch (SQLException | RuntimeException ex) {
+      JdbcBatchRanges.log("ERRO no lote " + index + ": " + ex.getMessage());
       try { closeCurrent(); } catch (SQLException close) { ex.addSuppressed(close); }
       throw ex;
     }
@@ -143,11 +161,16 @@ public final class LinkSqlBatchedResultSet implements InvocationHandler {
       if (current == null) return false;
       if (current.next()) {
         rowNumber++;
+        chunkRows++;
         validRow = true;
         return true;
       }
+      JdbcBatchRanges.log("Lote " + index + "/" + ranges.size()
+          + " concluido: " + chunkRows + " linhas; " + ((System.nanoTime() - chunkStarted) / 1_000_000)
+          + " ms; total enviado=" + rowNumber);
       closeCurrent();
     }
+    JdbcBatchRanges.log("Exportacao JDBC finalizada: " + rowNumber + " linhas entregues.");
     validRow = false;
     return false;
   }

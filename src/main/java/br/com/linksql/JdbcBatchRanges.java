@@ -48,6 +48,63 @@ final class JdbcBatchRanges {
     return ranges;
   }
 
+  static String discoverySql(String table, String column) {
+    if (!IDENTIFIER.matcher(table).matches() || !IDENTIFIER.matcher(column).matches())
+      throw new IllegalArgumentException("Tabela ou coluna de lote invalida");
+    String query = "SELECT DISTINCT TRIM(" + column + ") FROM " + table
+        + " WHERE " + column + " REGEXP '^[0-9]{6}
+                                 int batchSize) throws SQLException {
+    if (!IDENTIFIER.matcher(table).matches() || !IDENTIFIER.matcher(column).matches())
+      throw new SQLException("Tabela ou coluna de lote invalida");
+    if (batchSize < 1 || batchSize > 1000) throw new SQLException("Tamanho de lote fora de 1..1000");
+    Set<String> aliases = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+    Matcher matcher = ALIAS.matcher(sql);
+    while (matcher.find()) aliases.add(matcher.group(1));
+    if (aliases.isEmpty()) throw new SQLException("Nenhuma origem SRV_ identificada no SQL");
+    TreeSet<String> codes = new TreeSet<>();
+    String discoverySql = discoverySql(table, column);
+    log("Inicio descoberta de codigos: " + table + "." + column + ", tamanho por lote=" + batchSize);
+    long begun = System.nanoTime();
+    for (JdbcConnectionProfile profile : registry.allProfiles()) {
+      if (!aliases.remove(profile.name())) continue;
+      if (profile.type() != SqlDatabaseType.MYSQL) {
+        throw new SQLException("Descoberta por codigos suportada somente em origem MySQL: " + profile.name());
+      }
+      long started = System.nanoTime();
+      int fromSource = 0;
+      try (Connection connection = registry.source(profile.name()).getConnection();
+           Statement st = connection.createStatement()) {
+        st.setQueryTimeout(180);
+        st.setFetchSize(500);
+        try (ResultSet rs = st.executeQuery(discoverySql)) {
+          while (rs.next()) {
+            String code = rs.getString(1);
+            if (code != null && code.matches("[0-9]{6}")) {
+              codes.add(code);
+              fromSource++;
+            }
+          }
+        }
+      }
+      log("Origem " + profile.name() + ": " + fromSource + " codigos elegiveis; "
+          + ((System.nanoTime() - started) / 1_000_000) + " ms");
+    }
+    if (!aliases.isEmpty()) throw new SQLException("Fontes nao cadastradas: " + aliases);
+    if (codes.isEmpty()) throw new SQLException("Nenhum codigo elegivel encontrado nas fontes selecionadas");
+    List<String[]> result = groupCodes(codes, batchSize);
+    log("Descoberta concluida: " + codes.size() + " codigos distintos, " + result.size()
+        + " faixas ocupadas; " + ((System.nanoTime() - begun) / 1_000_000) + " ms");
+    return result;
+  }
+}
+ AND SQL_DELETED = 'F'";
+    if ("CAD_CLI0".equalsIgnoreCase(table) && "CLI_CODIGO".equalsIgnoreCase(column)) {
+      query += " AND UPPER(TRIM(COALESCE(CLI_EXCLUIDO, ''))) <> 'S'"
+          + " AND (COALESCE(YEAR(CLI_DTINAT), 0) < 1900 OR CLI_DTATIV > CLI_DTINAT)";
+    }
+    return query;
+  }
+
   static List<String[]> discover(SqlConnectionRegistry registry, String sql, String table, String column,
                                  int batchSize) throws SQLException {
     if (!IDENTIFIER.matcher(table).matches() || !IDENTIFIER.matcher(column).matches())
@@ -58,13 +115,7 @@ final class JdbcBatchRanges {
     while (matcher.find()) aliases.add(matcher.group(1));
     if (aliases.isEmpty()) throw new SQLException("Nenhuma origem SRV_ identificada no SQL");
     TreeSet<String> codes = new TreeSet<>();
-    boolean activeClients = "CAD_CLI0".equalsIgnoreCase(table) && "CLI_CODIGO".equalsIgnoreCase(column);
-    String discoverySql = "SELECT DISTINCT TRIM(" + column + ") FROM " + table
-        + " WHERE " + column + " REGEXP '^[0-9]{6}$' AND SQL_DELETED = 'F'";
-    if (activeClients) {
-      discoverySql += " AND UPPER(TRIM(COALESCE(CLI_EXCLUIDO, ''))) <> 'S'"
-          + " AND (COALESCE(YEAR(CLI_DTINAT), 0) < 1900 OR CLI_DTATIV > CLI_DTINAT)";
-    }
+    String discoverySql = discoverySql(table, column);
     log("Inicio descoberta de codigos: " + table + "." + column + ", tamanho por lote=" + batchSize);
     long begun = System.nanoTime();
     for (JdbcConnectionProfile profile : registry.allProfiles()) {

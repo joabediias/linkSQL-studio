@@ -87,6 +87,16 @@ final class LargeCsvExport {
     }
     return ranges;
   }
+  /** Exposes bounded ranges for a streaming JDBC ResultSet (no CSV writer). */
+  static List<String[]> jdbcRanges(SqlConnectionRegistry registry, String sql,
+                                   String table, String column, int batchSize) throws Exception {
+    Config config = new Config(table, column, 6, 3, batchSize, ';');
+    List<Range> found = discover(registry, sql, config, new AtomicBoolean(false), value -> {});
+    List<String[]> result = new ArrayList<>();
+    for (Range range : found) result.add(new String[]{range.start(), range.end()});
+    return result;
+  }
+
   private static void writeCell(Writer w, String value, char delimiter) throws IOException {
     if (value == null) value = "";
     boolean quote = value.indexOf('"') >= 0 || value.indexOf(delimiter) >= 0

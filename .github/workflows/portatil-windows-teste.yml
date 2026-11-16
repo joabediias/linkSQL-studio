@@ -41,3 +41,13 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 14
+      - name: Compilar LinkSQL JDBC 0.6 para exportador externo
+        shell: powershell
+        run: .\ferramentas\gerar-linksql-jdbc.ps1
+      - name: Publicar JAR JDBC experimental
+        uses: actions/upload-artifact@v4
+        with:
+          name: LinkSQL-JDBC-0.6-exportacao-incremental
+          path: target/linksql-jdbc/
+          if-no-files-found: error
+          retention-days: 14

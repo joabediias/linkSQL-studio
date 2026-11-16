@@ -149,7 +149,7 @@ public final class LinkSqlRelease40RegressionTest {
       try(Connection c=new FederatedStreamingDataSource(jdbc.source(),type).getConnection()) {
         c.createStatement();
         check(jdbc.fetch==(type==SqlDatabaseType.MYSQL?Integer.MIN_VALUE:1000),"leitura em blocos para "+type);
-        check(jdbc.timeout==120,"timeout na origem "+type);
+        check(jdbc.timeout==SqlQueryTimeout.seconds(),"timeout na origem "+type);
         if(type==SqlDatabaseType.POSTGRESQL)check(!jdbc.auto && jdbc.readOnly,"PG usa cursor em transação de leitura");
       }
       check(jdbc.closed,"conexão de origem devolvida "+type);

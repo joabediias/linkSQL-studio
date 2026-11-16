@@ -35,7 +35,7 @@ final class FederatedStreamingDataSource implements DataSource {
                     fetch = cursor ? 1000 : Integer.MIN_VALUE;
                   }
                   statement.setFetchSize(fetch);
-                  statement.setQueryTimeout(120);
+                  statement.setQueryTimeout(SqlQueryTimeout.seconds());
                 } catch (SQLException ex) { try { statement.close(); } catch (SQLException ignored) {} throw ex; }
               }
               return value;

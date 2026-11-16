@@ -38,7 +38,7 @@ final class FederatedResultCursor implements AutoCloseable {
       s = c.createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
       if (cancelled.getAsBoolean()) throw new CancellationException("Consulta cancelada");
       statementMonitor.accept(s);
-      s.setMaxRows(0); s.setQueryTimeout(120);
+      s.setMaxRows(0); s.setQueryTimeout(SqlQueryTimeout.seconds());
       cursor = new FederatedResultCursor(c, s);
       cursor.rows = s.executeQuery(sql);
       if (cancelled.getAsBoolean()) throw new CancellationException("Consulta cancelada");

@@ -52,49 +52,21 @@ final class LargeCsvExport {
     for (byte b : hash) s.append(String.format("%02x", b & 255));
     return s.toString();
   }
+  /** Descobre codigos presentes em vez de gerar faixas numericas vazias. */
   private static List<Range> discover(SqlConnectionRegistry registry, String sql, Config cfg,
                                       AtomicBoolean canceled, Consumer<String> report) throws Exception {
-    TreeSet<String> referenced = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
-    Matcher matcher = SOURCE.matcher(sql);
-    while (matcher.find()) referenced.add(matcher.group(1));
-    TreeSet<String> prefixes = new TreeSet<>();
-    for (JdbcConnectionProfile profile : registry.allProfiles()) {
-      if (!referenced.remove(profile.name())) continue;
-      if (profile.type() != SqlDatabaseType.MYSQL) throw new SQLException("Descoberta automatica disponivel para MySQL: " + profile.name());
-      if (canceled.get()) throw new InterruptedException("Cancelado");
-      report.accept("Lendo prefixos: " + profile.name());
-      String query = "SELECT DISTINCT LEFT(TRIM(" + cfg.column + "), " + cfg.prefixWidth
-          + ") FROM " + cfg.table + " WHERE " + cfg.column + " REGEXP '^[0-9]{" + cfg.width + "}$'";
-      try (Connection conn = registry.source(profile.name()).getConnection(); Statement st = conn.createStatement()) {
-        st.setQueryTimeout(180);
-        try (ResultSet rs = st.executeQuery(query)) {
-          while (rs.next()) {
-            String p = rs.getString(1);
-            if (p != null && p.matches("[0-9]{" + cfg.prefixWidth + "}")) prefixes.add(p);
-          }
-        }
-      }
-    }
-    if (!referenced.isEmpty()) throw new SQLException("Fontes nao cadastradas: " + referenced);
-    if (prefixes.isEmpty()) throw new SQLException("Nenhum prefixo numerico de largura " + cfg.width + " encontrado.");
-    long suffix = 1;
-    for (int n = cfg.prefixWidth; n < cfg.width; n++) suffix *= 10;
+    if (canceled.get()) throw new InterruptedException("Cancelado");
+    report.accept("Localizando codigos elegiveis nas fontes MySQL...");
+    List<String[]> occupied = JdbcBatchRanges.discover(registry, sql, cfg.table, cfg.column, cfg.batchSize);
     List<Range> ranges = new ArrayList<>();
-    for (String prefix : prefixes) {
-      long base = Long.parseLong(prefix) * suffix;
-      for (long x = 0; x < suffix; x += cfg.batchSize)
-        ranges.add(new Range(padded(base + x, cfg.width), padded(base + Math.min(suffix - 1, x + cfg.batchSize - 1), cfg.width)));
-    }
+    for (String[] pair : occupied) ranges.add(new Range(pair[0], pair[1]));
+    report.accept("Encontradas " + ranges.size() + " faixas ocupadas.");
     return ranges;
   }
-  /** Exposes bounded ranges for a streaming JDBC ResultSet (no CSV writer). */
+  /** Faixas somente com codigos cadastrados, compartilhadas com o JDBC. */
   static List<String[]> jdbcRanges(SqlConnectionRegistry registry, String sql,
                                    String table, String column, int batchSize) throws Exception {
-    Config config = new Config(table, column, 6, 3, batchSize, ';');
-    List<Range> found = discover(registry, sql, config, new AtomicBoolean(false), value -> {});
-    List<String[]> result = new ArrayList<>();
-    for (Range range : found) result.add(new String[]{range.start(), range.end()});
-    return result;
+    return JdbcBatchRanges.discover(registry, sql, table, column, batchSize);
   }
 
   private static void writeCell(Writer w, String value, char delimiter) throws IOException {

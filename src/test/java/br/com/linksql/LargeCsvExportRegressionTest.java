@@ -14,6 +14,8 @@ public final class LargeCsvExportRegressionTest {
     require(bounded.contains("CP.PAG_CLI >= '002000' AND CP.PAG_CLI <= '002249'"),
         "filtro pagamentos incorreto");
     require(bounded.contains("SRV_MATRIZ.CAD_CLI0"), "SQL fonte alterado");
+    require(!LargeCsvExport.partition(sql + ";", "002000", "002249").endsWith(";"),
+        "Calcite deve receber SQL sem ponto e virgula final");
     boolean rejected = false;
     try { LargeCsvExport.partition("SELECT 1", "000000", "000249"); }
     catch (IllegalArgumentException ex) { rejected = true; }

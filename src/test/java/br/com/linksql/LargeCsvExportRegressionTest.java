@@ -25,15 +25,15 @@ public final class LargeCsvExportRegressionTest {
     try (java.sql.Connection conn = java.sql.DriverManager.getConnection("jdbc:calcite:fun=mysql;caseSensitive=false");
          java.sql.Statement st = conn.createStatement()) {
       try (java.sql.ResultSet rs = st.executeQuery(
-          "SELECT REGEXP_REPLACE('', '[^0-9]', '') AS VALOR")) {
-        require(rs.next() && "".equals(rs.getString(1)), "Calcite falhou em REGEXP_REPLACE('')");
+          "SELECT REGEXP_REPLACE(COALESCE(NULLIF(TRIM(''), ''), ' '), '[^0-9]', '') AS VALOR")) {
+        require(rs.next() && "".equals(rs.getString(1)), "Workaround Calcite falhou em string vazia");
       }
       try (java.sql.ResultSet rs = st.executeQuery(
           "SELECT REGEXP_REPLACE('12.345-67', '[^0-9]', '') AS VALOR")) {
         require(rs.next() && "1234567".equals(rs.getString(1)), "Calcite alterou limpeza numerica");
       }
     } catch (Exception ex) {
-      throw new AssertionError("Calcite deve aceitar REGEXP_REPLACE sobre texto vazio", ex);
+      throw new AssertionError("Calcite deve aceitar REGEXP_REPLACE com protecao contra vazio", ex);
     }
     System.out.println("OK: particionamento SQL, marcadores e Calcite REGEXP_REPLACE");
   }

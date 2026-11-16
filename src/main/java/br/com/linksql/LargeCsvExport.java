@@ -41,7 +41,9 @@ final class LargeCsvExport {
     }
     m.appendTail(result);
     if (count == 0) throw new IllegalArgumentException("SQL sem marcadores /*LINKSQL_LOTE:ALIAS.CAMPO*/.");
-    return result.toString();
+    // Calcite JDBC espera uma unica instrução sem o terminador final.
+    String executable = result.toString().stripTrailing();
+    return executable.endsWith(";") ? executable.substring(0, executable.length() - 1).stripTrailing() : executable;
   }
   private static String padded(long n, int width) { return String.format(Locale.ROOT, "%0" + width + "d", n); }
   private static String fingerprint(String sql, Config cfg) throws Exception {

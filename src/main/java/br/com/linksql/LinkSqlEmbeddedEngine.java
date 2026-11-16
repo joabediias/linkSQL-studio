@@ -65,6 +65,8 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
 
   public Connection metadataConnection() { return metaConnection; }
 
+  SqlConnectionRegistry registryForBatches() { return registry; }
+
   public Query plan(String original) throws SQLException {
     ReadOnlySqlGuard.requireReadOnlySelect(original);
     String sql = original.strip();

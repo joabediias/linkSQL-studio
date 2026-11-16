@@ -28,6 +28,11 @@ jobs:
       - name: Compilar e gerar a pasta portátil
         shell: powershell
         run: .\distribuicao\gerar-windows.ps1 -SomentePortatil -SemZip
+      - name: Validar marcadores de exportacao incremental
+        shell: powershell
+        run: |
+          $cp = 'target\test-classes;target\classes;target\distribuicao-input\lib\*'
+          java -Djava.awt.headless=true -cp $cp br.com.linksql.LargeCsvExportRegressionTest
       - name: Disponibilizar o executável com as dependências
         uses: actions/upload-artifact@v4
         with:

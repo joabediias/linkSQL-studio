@@ -68,7 +68,7 @@ try {
         'NativeJdbcPaging', 'NativeQueryCount', 'NativeServerPaging', 'NativeSqlRouter',
         'SingleServerSqlRouter', 'SqlConnectionRegistry', 'SqlDatabaseType',
         'SqlPageTotals', 'SqlQueryPlanner', 'SqlResultModels',
-        'LargeCsvExport', 'LinkSqlBatchedResultSet',
+        'LargeCsvExport', 'LinkSqlBatchedResultSet', 'JdbcBatchRanges',
         'FederatedMysqlCompatibility', 'MysqlCompatDialect',
         'FederatedStreamingDataSource', 'DatabaseCatalog'
     )

@@ -72,6 +72,14 @@ public final class LinkSqlBatchedResultSet implements InvocationHandler {
     return new LinkSqlBatchedResultSet(engine, sql, owner, timeout, fetchSize, maxRows).proxy;
   }
 
+  /** Cancel without closing the result set on an unrelated thread. */
+  public static void cancel(ResultSet rs) {
+    if (rs != null && Proxy.isProxyClass(rs.getClass())) {
+      InvocationHandler handler = Proxy.getInvocationHandler(rs);
+      if (handler instanceof LinkSqlBatchedResultSet cursor) cursor.cancel();
+    }
+  }
+
   private void openNextChunk() throws SQLException {
     if (index >= ranges.size()) return;
     String[] bound = ranges.get(index++);

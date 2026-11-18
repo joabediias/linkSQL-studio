@@ -3087,22 +3087,7 @@ public class Main {
 
   private static void showError(Exception ex) {
     LinkSqlLog.error("Operação do LinkSQL", ex);
-    Throwable cause = ex;
-    while (cause.getCause() != null && cause.getCause() != cause) cause = cause.getCause();
-    StringBuilder details = new StringBuilder(String.valueOf(cause.getMessage()));
-    if (cause instanceof SQLException jdbcError) {
-      if (jdbcError.getSQLState() != null && !jdbcError.getSQLState().isBlank())
-        details.append("\nSQLState: ").append(jdbcError.getSQLState());
-      if (jdbcError.getErrorCode() != 0)
-        details.append(" | Codigo JDBC: ").append(jdbcError.getErrorCode());
-      int extra = 0;
-      for (SQLException next = jdbcError.getNextException(); next != null && extra++ < 3;
-          next = next.getNextException()) {
-        if (next.getMessage() != null && !next.getMessage().equals(cause.getMessage()))
-          details.append("\n").append(next.getMessage());
-      }
-    }
-    JOptionPane.showMessageDialog(frame, details.toString(), "Erro", JOptionPane.ERROR_MESSAGE);
+    LinkSqlErrorDialog.show(frame, ex);
   }
 
   private static class SourceNode {

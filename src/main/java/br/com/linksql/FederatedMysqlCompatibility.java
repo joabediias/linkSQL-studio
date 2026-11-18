@@ -23,6 +23,7 @@ import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlNodeList;
 import org.apache.calcite.sql.SqlUnresolvedFunction;
+import org.apache.calcite.sql.fun.SqlCase;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.parser.SqlAbstractParserImpl;
 import org.apache.calcite.sql.parser.SqlParserImplFactory;
@@ -81,6 +82,15 @@ public final class FederatedMysqlCompatibility implements SqlParserImplFactory {
     return new SqlShuttle() {
       @Override public SqlNode visit(SqlCall node) {
         SqlCall call = (SqlCall) super.visit(node);
+        // IF(condicao, verdadeiro, falso) do MySQL deve funcionar no Calcite.
+        if (call.getOperator() instanceof SqlUnresolvedFunction mysqlIf
+            && mysqlIf.getNameAsId().isSimple()
+            && mysqlIf.getName().equalsIgnoreCase("IF")
+            && call.operandCount() == 3 && call.getFunctionQuantifier() == null) {
+          var pos = call.getParserPosition();
+          return new SqlCase(pos, null, SqlNodeList.of(call.operand(0)),
+              SqlNodeList.of(call.operand(1)), call.operand(2));
+        }
         if (!(call.getOperator() instanceof SqlUnresolvedFunction function)
             || !function.getNameAsId().isSimple() || !function.getName().equalsIgnoreCase("CONCAT_WS")
             || call.operandCount() < 2 || call.getFunctionQuantifier() != null) return call;

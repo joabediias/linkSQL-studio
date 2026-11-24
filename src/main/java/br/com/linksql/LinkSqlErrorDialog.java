@@ -1,6 +1,11 @@
 package br.com.linksql;
 
-import java.awt.Component;
+import java.awt.*;
+import java.awt.datatransfer.StringSelection;
+import java.awt.event.KeyEvent;
+import java.sql.SQLTimeoutException;
+import javax.swing.*;
+import javax.swing.border.EmptyBorder;
 import java.awt.Dimension;
 import java.sql.SQLException;
 import java.util.Collections;
@@ -17,9 +22,31 @@ final class LinkSqlErrorDialog {
   record Explanation(String title, String message, String suggestion) {}
 
   static Explanation explain(Throwable error) {
-    for (Throwable cause : chain(error)) {
+    java.util.List<Throwable> causes = chain(error);
+    for (Throwable cause : causes) {
+      if (cause instanceof OutOfMemoryError)
+        return new Explanation("Memória insuficiente",
+            "O Java ficou sem memória para concluir a operação.",
+            "Salve sua consulta e reinicie o LinkSQL. Reduza o volume de dados e revise agrupamentos e ordenações antes de tentar novamente.");
+    }
+    for (Throwable cause : causes) {
+      if (cause instanceof SQLException sql && sql.getSQLState() != null && sql.getSQLState().startsWith("28"))
+        return new Explanation("Falha de autenticação", "O banco recusou as credenciais da conexão.",
+            "Confira usuário e senha no cadastro da conexão.");
+    }
+    for (Throwable cause : causes) {
       String message = cause.getMessage() == null ? "" : cause.getMessage();
       String lower = message.toLowerCase(java.util.Locale.ROOT);
+      if (cause instanceof SQLTimeoutException || lower.contains("query execution is reached")
+          || lower.contains("query timed out") || lower.contains("query timeout"))
+        return new Explanation("Tempo limite da consulta atingido",
+            "A consulta ultrapassou o tempo permitido para execução.",
+            "Revise os filtros e o volume de dados. Confira também o timeout configurado na conexão antes de executar novamente.");
+      if (lower.contains("you have an error in your sql syntax")
+          || lower.contains("syntax error") || lower.contains("parse failed"))
+        return new Explanation("SQL não aceito",
+            "O banco ou o mecanismo de consultas não conseguiu interpretar o comando SQL.",
+            "Consulte o trecho indicado nos detalhes. No modo Federado, o erro também pode estar na SQL gerada para o banco de origem.");
       if (cause instanceof NumberFormatException || lower.contains("for input string:"))
         return new Explanation("Erro de conversão de dados",
             "Um valor de texto não pôde ser convertido para número.",
@@ -87,21 +114,95 @@ final class LinkSqlErrorDialog {
   }
 
   static void show(Component parent, Throwable error) {
-    Explanation explanation = explain(error);
-    String message = explanation.message() + "\n\nSugestão: " + explanation.suggestion();
-    Object[] options = {"Fechar", "Detalhes técnicos"};
-    int choice = JOptionPane.showOptionDialog(parent, message, explanation.title(),
-        JOptionPane.DEFAULT_OPTION, JOptionPane.ERROR_MESSAGE, null, options, options[0]);
-    if (choice == 1) {
-      JTextArea text = new JTextArea(technicalDetails(error));
-      text.setEditable(false);
-      text.setCaretPosition(0);
-      text.setLineWrap(true);
-      text.setWrapStyleWord(true);
-      JScrollPane pane = new JScrollPane(text);
-      pane.setPreferredSize(new Dimension(650, 280));
-      JOptionPane.showMessageDialog(parent, pane, "Detalhes técnicos do erro",
-          JOptionPane.INFORMATION_MESSAGE);
+    if (!SwingUtilities.isEventDispatchThread()) {
+      SwingUtilities.invokeLater(() -> show(parent, error));
+      return;
     }
+    Explanation explanation = explain(error);
+    String details = technicalDetails(error);
+    Window owner = parent instanceof Window window ? window :
+        parent == null ? null : SwingUtilities.getWindowAncestor(parent);
+    JDialog dialog = new JDialog(owner, explanation.title(), Dialog.ModalityType.APPLICATION_MODAL);
+    dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+    JPanel content = new JPanel(new BorderLayout(0, 16));
+    content.setBorder(new EmptyBorder(20, 20, 16, 20));
+    JPanel summary = new JPanel(new BorderLayout(14, 0));
+    JLabel icon = new JLabel(UIManager.getIcon("OptionPane.errorIcon"));
+    icon.setVerticalAlignment(SwingConstants.TOP);
+    summary.add(icon, BorderLayout.WEST);
+    JPanel words = new JPanel(new BorderLayout(0, 10));
+    JLabel title = new JLabel(explanation.title());
+    title.setFont(title.getFont().deriveFont(Font.BOLD, 17f));
+    words.add(title, BorderLayout.NORTH);
+    JTextArea message = new JTextArea(explanation.message() + "\n\nO que fazer\n" + explanation.suggestion());
+    message.setEditable(false);
+    message.setOpaque(false);
+    message.setFont(UIManager.getFont("Label.font"));
+    message.setForeground(UIManager.getColor("Label.foreground"));
+    message.setLineWrap(true);
+    message.setWrapStyleWord(true);
+    message.setColumns(54);
+    words.add(message, BorderLayout.CENTER);
+    summary.add(words, BorderLayout.CENTER);
+    content.add(summary, BorderLayout.NORTH);
+
+    JTextArea technical = new JTextArea(details, 12, 54);
+    technical.setEditable(false);
+    technical.setLineWrap(true);
+    technical.setWrapStyleWord(true);
+    technical.setCaretPosition(0);
+    JScrollPane pane = new JScrollPane(technical);
+    pane.setVisible(false);
+    content.add(pane, BorderLayout.CENTER);
+    JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+    JButton toggle = new JButton("Mostrar detalhes");
+    JButton copy = new JButton("Copiar erro");
+    JButton close = new JButton("Fechar");
+    toggle.addActionListener(event -> {
+      pane.setVisible(!pane.isVisible());
+      toggle.setText(pane.isVisible() ? "Ocultar detalhes" : "Mostrar detalhes");
+      dialog.pack();
+      fitOnScreen(dialog);
+    });
+    copy.addActionListener(event -> {
+      try {
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(
+            explanation.title() + "\n" + explanation.message() + "\n\n" + details), null);
+        copy.setText("Copiado!");
+      } catch (IllegalStateException | SecurityException ex) {
+        pane.setVisible(true);
+        toggle.setText("Ocultar detalhes");
+        technical.selectAll();
+        technical.requestFocusInWindow();
+        copy.setText("Use Ctrl+C nos detalhes");
+        dialog.pack();
+        fitOnScreen(dialog);
+      }
+    });
+    close.addActionListener(event -> dialog.dispose());
+    actions.add(toggle);
+    actions.add(copy);
+    actions.add(close);
+    content.add(actions, BorderLayout.SOUTH);
+    dialog.setContentPane(content);
+    dialog.getRootPane().setDefaultButton(close);
+    dialog.getRootPane().registerKeyboardAction(event -> dialog.dispose(),
+        KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), JComponent.WHEN_IN_FOCUSED_WINDOW);
+    dialog.pack();
+    dialog.setLocationRelativeTo(parent);
+    fitOnScreen(dialog);
+    dialog.setVisible(true);
+  }
+
+  private static void fitOnScreen(JDialog dialog) {
+    GraphicsConfiguration config = dialog.getGraphicsConfiguration();
+    Rectangle bounds = config.getBounds();
+    Insets insets = Toolkit.getDefaultToolkit().getScreenInsets(config);
+    int left = bounds.x + insets.left, top = bounds.y + insets.top;
+    int width = bounds.width - insets.left - insets.right;
+    int height = bounds.height - insets.top - insets.bottom;
+    dialog.setSize(Math.min(dialog.getWidth(), width), Math.min(dialog.getHeight(), height));
+    dialog.setLocation(Math.max(left, Math.min(dialog.getX(), left + width - dialog.getWidth())),
+        Math.max(top, Math.min(dialog.getY(), top + height - dialog.getHeight())));
   }
 }

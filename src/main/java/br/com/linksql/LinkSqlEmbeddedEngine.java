@@ -82,13 +82,14 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
     if (nativeRoute != null) return new Query(sourceConnection(nativeRoute.source()), nativeRoute.sql());
     if (mysqlRoute != null) return new Query(sourceConnection(mysqlRoute.source()),
         SqlQueryPlanner.executableSql(sql, registry.mysqlSourceNames()));
-    if (mode.equals("duckdb")) return diskQuery(sql);
-    // Automático conserva a semântica do Calcite enquanto não houver
-    // critérios de roteamento DuckDB homologados.
-    return new Query(registry.openFederatedQueryConnection(sql), sql);
+    return new Query(openFederated(registry, sql, mode), sql);
   }
 
-  private Query diskQuery(String sql) throws SQLException {
+  static Connection openFederated(SqlConnectionRegistry registry, String sql, String mode) throws SQLException {
+    if (!mode.equals("duckdb")) return registry.openFederatedQueryConnection(sql);
+    // Origens ainda não homologadas no DuckDB permanecem no Calcite.
+    try { DuckDbFederatedExecutor.tables(sql, registry.mysqlSourceNames()); }
+    catch (SQLException unsupported) { return registry.openFederatedQueryConnection(sql); }
     DuckDbWorkspace workspace = null;
     try {
       var config = FederatedEngineSettings.effective();
@@ -98,7 +99,7 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
       workspace = DuckDbFederatedExecutor.prepare(sql, registry, temp, memory, threads,
           () -> Thread.currentThread().isInterrupted());
       DuckDbSqlCompatibility.install(workspace.connection());
-      return new Query(workspace.managedConnection(), DuckDbSqlCompatibility.rewrite(sql));
+      return workspace.managedConnection();
     } catch (Exception ex) {
       if (workspace != null) try { workspace.close(); } catch (Exception close) { ex.addSuppressed(close); }
       if (ex instanceof SQLException se) throw se;

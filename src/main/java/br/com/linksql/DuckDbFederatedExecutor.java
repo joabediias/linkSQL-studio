@@ -234,6 +234,8 @@ final class DuckDbFederatedExecutor {
                 table.source(), table.name(), count, (connected-started)/1e9,
                 (ready-connected)/1e9, (System.nanoTime()-ready)/1e9));
           } finally { active.accept(null); }
+        } catch (SQLException ex) {
+          throw registry.connectionFailure(table.source(), "preparação DuckDB: " + table.name(), ex);
         }
       }
       progress.accept("DuckDB: preparação concluída; executando SQL local");

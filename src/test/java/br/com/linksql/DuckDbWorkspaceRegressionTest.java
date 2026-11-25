@@ -7,6 +7,14 @@ import java.sql.DriverManager;
 /** Teste executável sem infraestrutura externa. */
 public final class DuckDbWorkspaceRegressionTest {
   public static void main(String[] args) throws Exception {
+    var projection = DuckDbFederatedExecutor.projection(
+        "WITH B AS (SELECT C.CLI_CODIGO, C.CLI_LIMITE FROM SRV_MATRIZ.CAD_CLI0 C WHERE C.SQL_DELETED = 'F') SELECT B.* FROM B");
+    if (projection.all() || !projection.includes("CLI_CODIGO") || !projection.includes("SQL_DELETED")
+        || projection.includes("CLI_CODPAG")) throw new AssertionError("Projeção incorreta");
+    if (!DuckDbFederatedExecutor.projection("SELECT C.* FROM SRV_MATRIZ.CAD_CLI0 C").all())
+      throw new AssertionError("Wildcard físico não preservado");
+    if (!DuckDbFederatedExecutor.projection("SELECT A.ID FROM A.T A NATURAL JOIN B.T B").all())
+      throw new AssertionError("NATURAL JOIN não preservado");
     var dir = Files.createTempDirectory("linksql-duckdb-test-");
     try {
       var csv = dir.resolve("resultado.csv");

@@ -22,6 +22,15 @@ public final class DuckDbWorkspaceRegressionTest {
            var st = source.createStatement();
            var workspace = DuckDbWorkspace.open(dir, 256, 1);
            var rows = st.executeQuery("SELECT i AS codigo, CAST(i AS DECIMAL(12,2)) AS limite FROM range(10000) t(i)")) {
+        DuckDbSqlCompatibility.install(workspace.connection());
+        try (var compat = workspace.connection().createStatement();
+             var check = compat.executeQuery(DuckDbSqlCompatibility.rewrite(
+                 "SELECT REGEXP_REPLACE('12.345-67', '[^0-9]', ''), DATE_FORMAT(DATE '2026-11-25', '%d/%m/%Y'), CHAR(65), 'REGEXP_REPLACE(x)'"))) {
+          if (!check.next() || !"1234567".equals(check.getString(1))
+              || !"25/11/2026".equals(check.getString(2)) || !"A".equals(check.getString(3))
+              || !"REGEXP_REPLACE(x)".equals(check.getString(4)))
+            throw new AssertionError("Compatibilidade SQL incorreta");
+        }
         long transferred = DuckDbTableTransfer.copy(rows, workspace.connection(), "origem", "clientes", () -> false);
         if (transferred != 10000) throw new AssertionError("Transferência incompleta");
         try (var q = workspace.connection().createStatement();

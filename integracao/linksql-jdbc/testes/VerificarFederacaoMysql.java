@@ -53,6 +53,35 @@ public class VerificarFederacaoMysql {
         }
       }
       System.out.println("OK: JDBC federado Calcite, DuckDB e automático, valores e limpeza");
+      // 560 mil linhas de origem, sem materializar o ResultSet no heap do cliente.
+      for(int i=1;i<=4;i++) {
+        String db="origem"+i;
+        try(Connection c=DriverManager.getConnection("jdbc:mysql://127.0.0.1:3306/"+db+"?useSSL=false&connectTimeout=10000&socketTimeout=30000","root",System.getenv("LINKSQL_TEST_PASSWORD")); Statement st=c.createStatement()) {
+          st.execute("CREATE TABLE volume (id INT PRIMARY KEY, limite DECIMAL(12,2), extra BLOB)");
+          st.execute("INSERT INTO volume VALUES (1,10.25,REPEAT('X',2048))");
+          for(int offset=1;offset<131072;offset*=2)
+            st.execute("INSERT INTO volume SELECT id+"+offset+", limite, extra FROM volume");
+          st.execute("INSERT INTO volume SELECT id+131072, limite, extra FROM volume WHERE id<=8928");
+        }
+      }
+      String large="SELECT id, SUM(limite) AS total FROM (SELECT id, limite FROM S1.volume UNION ALL SELECT id, limite FROM S2.volume UNION ALL SELECT id, limite FROM S3.volume UNION ALL SELECT id, limite FROM S4.volume) x GROUP BY id ORDER BY id";
+      System.setProperty("linksql.duckdb.memory.mb","128");
+      long start=System.nanoTime();
+      try(Connection c=DriverManager.getConnection(url+"&engine=duckdb");Statement st=c.createStatement()) {
+        st.setQueryTimeout(120);
+        try(ResultSet rs=st.executeQuery(large)) {
+          int count=0;
+          while(rs.next()) {
+            if(rs.getInt(1)!=++count || rs.getBigDecimal(2).compareTo(new java.math.BigDecimal("41.00"))!=0)
+              throw new AssertionError("Divergência em grande volume: "+count);
+          }
+          if(count!=140000) throw new AssertionError("Quantidade incorreta: "+count);
+        }
+      }
+      if(Files.exists(workspace)) try(var children=Files.list(workspace)) {
+        if(children.findAny().isPresent()) throw new AssertionError("Workspace não removido após grande volume");
+      }
+      System.out.println("OK: 560000 linhas de origem, 140000 resultados, DuckDB 128 MB, segundos="+((System.nanoTime()-start)/1e9));
     } finally {
       try(var paths=Files.walk(dir)) { for(var p:paths.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p); }
     }

@@ -15,28 +15,36 @@ public class VerificarFederacaoMysql {
       var profiles = new ArrayList<String>();
       for (int i=1;i<=4;i++) {
         String db="origem"+i;
-        try (Connection c=DriverManager.getConnection("jdbc:mysql://127.0.0.1:3306/?allowPublicKeyRetrieval=true&useSSL=false","root",System.getenv("LINKSQL_TEST_PASSWORD"));
+        System.out.println("Preparando "+db);
+        try (Connection c=DriverManager.getConnection("jdbc:mysql://127.0.0.1:3306/?allowPublicKeyRetrieval=true&useSSL=false&connectTimeout=10000&socketTimeout=30000","root",System.getenv("LINKSQL_TEST_PASSWORD"));
              Statement st=c.createStatement()) {
           st.execute("CREATE DATABASE IF NOT EXISTS "+db);
           st.execute("DROP TABLE IF EXISTS "+db+".clientes");
           st.execute("CREATE TABLE "+db+".clientes (id INT, limite DECIMAL(12,2), documento VARCHAR(30), extra BLOB)");
           st.execute("INSERT INTO "+db+".clientes VALUES (1,10.25,'12.345-67',NULL),(2,20.50,'98.765-43',NULL),(3,NULL,NULL,NULL)");
         }
-        profiles.add("{\"name\":\"S"+i+"\",\"type\":\"MYSQL\",\"database\":\""+db+"\",\"schema\":\""+db+"\",\"user\":\"root\",\"passwordEnv\":\"LINKSQL_TEST_PASSWORD\",\"jdbcUrl\":\"jdbc:mysql://127.0.0.1:3306/"+db+"?allowPublicKeyRetrieval=true&useSSL=false\"}");
+        profiles.add("{\"name\":\"S"+i+"\",\"type\":\"MYSQL\",\"database\":\""+db+"\",\"schema\":\""+db+"\",\"user\":\"root\",\"passwordEnv\":\"LINKSQL_TEST_PASSWORD\",\"jdbcUrl\":\"jdbc:mysql://127.0.0.1:3306/"+db+"?allowPublicKeyRetrieval=true&useSSL=false&connectTimeout=10000&socketTimeout=30000\"}");
       }
       Files.writeString(config,"{\"connections\":["+String.join(",",profiles)+"]}",StandardCharsets.UTF_8);
       String url="jdbc:linksql:embedded?config="+java.net.URLEncoder.encode(config.toString(),StandardCharsets.UTF_8);
       String sql="SELECT id, SUM(limite) AS total FROM (SELECT id, limite FROM S1.clientes UNION ALL SELECT id, limite FROM S2.clientes UNION ALL SELECT id, limite FROM S3.clientes UNION ALL SELECT id, limite FROM S4.clientes) x GROUP BY id ORDER BY id";
       List<String> baseline=null;
       for(String mode:List.of("calcite","duckdb","auto")) {
+        System.out.println("Iniciando motor "+mode);
         List<String> rows=new ArrayList<>();
-        try(Connection c=DriverManager.getConnection(url+"&engine="+mode);Statement st=c.createStatement();ResultSet rs=st.executeQuery(sql)) {
+        try(Connection c=DriverManager.getConnection(url+"&engine="+mode);Statement st=c.createStatement()) {
+          System.out.println("Conectado "+mode);
+          st.setQueryTimeout(60);
+          try(ResultSet rs=st.executeQuery(sql)) {
+          System.out.println("ResultSet disponível "+mode);
           if(rs.getMetaData().getColumnCount()!=2) throw new AssertionError("Layout incorreto");
           while(rs.next()) {
             var amount=rs.getBigDecimal(2);
             rows.add(rs.getInt(1)+":"+(amount==null?"NULL":amount.stripTrailingZeros().toPlainString()));
           }
         }
+        }
+        System.out.println("Encerrado "+mode);
         if(!rows.equals(List.of("1:41","2:82","3:NULL"))) throw new AssertionError(mode+": "+rows);
         if(baseline==null) baseline=rows;
         else if(!baseline.equals(rows)) throw new AssertionError("Divergência "+mode);

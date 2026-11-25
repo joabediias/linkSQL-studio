@@ -2178,7 +2178,27 @@ public class Main {
   }
 
   private static Connection openQueryConnection(String sql) throws SQLException {
-    return LinkSqlEmbeddedEngine.openFederated(CONNECTIONS, sql, FederatedEngineSettings.effective().mode());
+    SwingWorker<?, ?> owner = currentQuery;
+    if (owner == null || owner.isDone() || !Thread.currentThread().getName().startsWith("SwingWorker-"))
+      return LinkSqlEmbeddedEngine.openFederated(CONNECTIONS, sql, FederatedEngineSettings.effective().mode());
+    java.util.concurrent.atomic.AtomicReference<Statement> staging = new java.util.concurrent.atomic.AtomicReference<>();
+    try {
+      return LinkSqlEmbeddedEngine.openFederated(CONNECTIONS, sql, FederatedEngineSettings.effective().mode(),
+          () -> owner.isCancelled() || Thread.currentThread().isInterrupted(),
+          st -> {
+            Statement previous = staging.getAndSet(st);
+            if (currentQuery == owner) {
+              if (st != null) RUNNING_STATEMENT.set(st);
+              else RUNNING_STATEMENT.compareAndSet(previous, null);
+            }
+          },
+          message -> SwingUtilities.invokeLater(() -> {
+            if (currentQuery == owner && !owner.isDone() && !owner.isCancelled()) status.setText(" " + message);
+          }));
+    } finally {
+      Statement previous = staging.getAndSet(null);
+      if (previous != null) RUNNING_STATEMENT.compareAndSet(previous, null);
+    }
   }
 
   private static void cancelRunningQuery() {

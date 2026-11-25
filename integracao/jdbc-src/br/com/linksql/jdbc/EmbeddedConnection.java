@@ -21,8 +21,8 @@ final class EmbeddedConnection implements InvocationHandler {
 
   private EmbeddedConnection(LinkSqlEmbeddedEngine engine) { this.engine = engine; }
 
-  static Connection open(Path config) throws SQLException {
-    LinkSqlEmbeddedEngine engine = new LinkSqlEmbeddedEngine(config);
+  static Connection open(Path config, String mode) throws SQLException {
+    LinkSqlEmbeddedEngine engine = new LinkSqlEmbeddedEngine(config, mode);
     EmbeddedConnection handler = new EmbeddedConnection(engine);
     Connection result = (Connection) Proxy.newProxyInstance(
         LinkSqlDriver.class.getClassLoader(), new Class<?>[]{Connection.class}, handler);

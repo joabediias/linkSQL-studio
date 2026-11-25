@@ -11,6 +11,13 @@ import java.util.Comparator;
 
 /** Área de trabalho isolada por execução. Não abre conexões externas. */
 final class DuckDbWorkspace implements AutoCloseable {
+  private static final java.util.concurrent.ScheduledThreadPoolExecutor TIMEOUTS =
+      new java.util.concurrent.ScheduledThreadPoolExecutor(1, runnable -> {
+        Thread thread = new Thread(runnable, "linksql-duckdb-timeout");
+        thread.setDaemon(true);
+        return thread;
+      });
+  static { TIMEOUTS.setRemoveOnCancelPolicy(true); }
   private final Path directory;
   private final Connection connection;
 
@@ -68,16 +75,31 @@ final class DuckDbWorkspace implements AutoCloseable {
             Object result = method.invoke(connection, args);
             if (result instanceof Statement st && name.equals("createStatement")) {
               return java.lang.reflect.Proxy.newProxyInstance(Statement.class.getClassLoader(),
-                  new Class<?>[]{Statement.class}, (p, m, a) -> {
+                  new Class<?>[]{Statement.class}, new java.lang.reflect.InvocationHandler() {
+                    private int timeoutSeconds;
+                    private volatile java.util.concurrent.ScheduledFuture<?> deadline;
+                    @Override public Object invoke(Object p, java.lang.reflect.Method m, Object[] a) throws Throwable {
                     try {
+                      if (m.getName().equals("setQueryTimeout")) {
+                        int seconds = (Integer) a[0];
+                        if (seconds < 0) throw new SQLException("Timeout inválido");
+                        timeoutSeconds = seconds;
+                        return null;
+                      }
+                      if (m.getName().equals("getQueryTimeout")) return timeoutSeconds;
                       if (a != null && a.length > 0 && a[0] instanceof String sql
                           && (m.getName().equals("executeQuery") || m.getName().equals("execute"))) {
                         ReadOnlySqlGuard.requireReadOnlySelect(sql);
                         a = a.clone();
                         a[0] = DuckDbSqlCompatibility.rewrite(sql);
+                        if (timeoutSeconds > 0) deadline = TIMEOUTS.schedule(() -> {
+                          try { st.cancel(); } catch (SQLException ignored) {}
+                        }, timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS);
                       }
                       return m.invoke(st, a);
                     } catch (java.lang.reflect.InvocationTargetException ex) { throw ex.getCause(); }
+                    finally { if (deadline != null && (m.getName().equals("executeQuery") || m.getName().equals("execute") || m.getName().equals("close"))) { deadline.cancel(false); deadline = null; } }
+                    }
                   });
             }
             return result;

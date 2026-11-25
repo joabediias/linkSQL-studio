@@ -41,6 +41,8 @@ public final class LinkSqlDriver implements Driver {
     if (q >= 0) for (String part : url.substring(q + 1).split("&"))
       if (part.startsWith("engine=")) mode = URLDecoder.decode(part.substring(7), StandardCharsets.UTF_8);
     if (mode == null || mode.isBlank()) mode = br.com.linksql.FederatedEngineSettings.effective().mode();
+    getParentLogger().info("LinkSQL JDBC 0.7 | configuração: " + config.toAbsolutePath().normalize()
+        + " | motor solicitado: " + mode);
     return EmbeddedConnection.open(config, mode);
   }
 

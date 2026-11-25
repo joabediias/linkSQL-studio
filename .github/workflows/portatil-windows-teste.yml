@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   portatil-windows:
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'fix/timeout-consultas-15-min'
+    if: github.event.pull_request.head.repo.full_name == github.repository && (github.event.pull_request.head.ref == 'fix/roteamento-consultas-mysql' || github.event.pull_request.head.ref == 'feat/regexp-replace-local' || github.event.pull_request.head.ref == 'fix/timeout-consultas-15-min')
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
@@ -33,10 +33,11 @@ jobs:
         run: |
           $cp = 'target\test-classes;target\classes;target\distribuicao-input\lib\*'
           & java '-Djava.awt.headless=true' '-cp' $cp 'br.com.linksql.SqlQueryTimeoutRegressionTest'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Disponibilizar o executável com as dependências
         uses: actions/upload-artifact@v4
         with:
-          name: LinkSQL-4.0.0-timeout-15min-portatil-windows-x64
+          name: LinkSQL-4.0.0-PR${{ github.event.pull_request.number }}-portatil-windows-x64
           path: target/distribuicao/
           if-no-files-found: error
           include-hidden-files: true

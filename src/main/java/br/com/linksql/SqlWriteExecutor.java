@@ -23,7 +23,7 @@ final class SqlWriteExecutor {
       Result result;
       try (Statement statement = connection.createStatement()) {
         running.accept(statement);
-        statement.setQueryTimeout(120);
+        statement.setQueryTimeout(SqlQueryTimeout.seconds());
         statement.setMaxRows(0); // nunca limitar a quantidade de linhas alteradas
         boolean rows = statement.execute(sql);
         DefaultTableModel model = null;

@@ -36,3 +36,4 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           java -cp $cp br.com.linksql.LinkSqlRelease40RegressionTest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+

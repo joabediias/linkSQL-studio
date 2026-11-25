@@ -77,8 +77,13 @@ final class SqlConnectionRegistry {
     ds.setUrl(profile.resolvedJdbcUrl());
     ds.setUsername(profile.user());
     ds.setPassword(password);
-    if (profile.type() == SqlDatabaseType.MYSQL)
+    if (profile.type() == SqlDatabaseType.MYSQL) {
       ds.addConnectionProperty("useCursorFetch", "true");
+      // Trata datas zeradas do MySQL legado sem alterar os perfis salvos.
+      // Uma preferencia explicita na URL da conexao continua prevalecendo.
+      if (!profile.resolvedJdbcUrl().matches("(?i).*([?&;])zeroDateTimeBehavior=.*"))
+        ds.addConnectionProperty("zeroDateTimeBehavior", "CONVERT_TO_NULL");
+    }
     // Calcite pode requisitar conexoes simultaneas para metadados e etapas
     // de subconsultas/JOINS na mesma origem. As conexoes sao abertas sob demanda.
     // Um limite de 2 provocava exaustao do pool em consultas com 4+ fontes.

@@ -23,6 +23,7 @@ import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlNodeList;
 import org.apache.calcite.sql.SqlUnresolvedFunction;
+import org.apache.calcite.sql.fun.SqlCase;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.parser.SqlAbstractParserImpl;
 import org.apache.calcite.sql.parser.SqlParserImplFactory;
@@ -86,6 +87,15 @@ public final class FederatedMysqlCompatibility implements SqlParserImplFactory {
     return new SqlShuttle() {
       @Override public SqlNode visit(SqlCall node) {
         SqlCall call = (SqlCall) super.visit(node);
+        // IF(condicao, verdadeiro, falso) do MySQL deve funcionar no Calcite.
+        if (call.getOperator() instanceof SqlUnresolvedFunction mysqlIf
+            && mysqlIf.getNameAsId().isSimple()
+            && mysqlIf.getName().equalsIgnoreCase("IF")
+            && call.operandCount() == 3 && call.getFunctionQuantifier() == null) {
+          var pos = call.getParserPosition();
+          return new SqlCase(pos, null, SqlNodeList.of(call.operand(0)),
+              SqlNodeList.of(call.operand(1)), call.operand(2));
+        }
         // Evita que o MySQL 5.7 receba REGEXP_REPLACE e corrige a assinatura
         // restrita de LPAD no Calcite quando ambos aparecem no mesmo SELECT.
         // Mantemos os nomes originais no SQL do editor.
@@ -168,19 +178,7 @@ public final class FederatedMysqlCompatibility implements SqlParserImplFactory {
     return SqlFunctions.rpad(value, length, padding);
   }
 
-  /**
-   * Substituicao regex local (sintaxe Java Pattern). O texto de substituicao e
-   * literal, de modo que '
-    if (separator == null || values == null) return null;
-    StringJoiner result = new StringJoiner(separator);
-    for (Object value : values) {
-      if (value != null) result.add(value.toString());
-    }
-    return result.toString();
-  }
-}
- e '\\' nao precisam ser escapados ao limpar dados.
-   */
+  /** Substituicao local com Java Pattern e texto de substituicao literal. */
   public static String regexpReplace(String value, String expression, String replacement) {
     if (value == null || expression == null || replacement == null) return null;
     return Pattern.compile(expression).matcher(value)
@@ -196,3 +194,4 @@ public final class FederatedMysqlCompatibility implements SqlParserImplFactory {
     return result.toString();
   }
 }
+

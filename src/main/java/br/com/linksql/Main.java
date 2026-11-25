@@ -3122,7 +3122,8 @@ public class Main {
              Statement st = workspace.connection().createStatement()) {
           if (isCancelled()) throw new java.util.concurrent.CancellationException();
           if (currentQuery == this) RUNNING_STATEMENT.set(st);
-          try (ResultSet rs = st.executeQuery(sql)) {
+          DuckDbSqlCompatibility.install(workspace.connection());
+          try (ResultSet rs = st.executeQuery(DuckDbSqlCompatibility.rewrite(sql))) {
             return CsvExportWriter.write(rs, output, StandardCharsets.UTF_8, ';', true, true, this::isCancelled);
           } finally { RUNNING_STATEMENT.compareAndSet(st, null); }
         }

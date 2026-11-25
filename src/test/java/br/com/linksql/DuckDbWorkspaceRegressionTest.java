@@ -29,7 +29,20 @@ public final class DuckDbWorkspaceRegressionTest {
     if (!disjunction.get(physical).isEmpty()) throw new AssertionError("OR não deve ser delegado");
     var joined = DuckDbFederatedExecutor.nullFilters(
         "SELECT C.ID FROM SRV_MATRIZ.CAD_CLI0 C LEFT JOIN SRV_MATRIZ.OUTRA D ON C.ID = D.ID WHERE C.ID IS NOT NULL", aliases);
-    if (!joined.get(physical).isEmpty()) throw new AssertionError("Filtro indevido em JOIN");
+    var other = new DuckDbFederatedExecutor.Table("SRV_MATRIZ", "OUTRA");
+    if (!java.util.Set.of("ID").equals(joined.get(physical)) || !joined.get(other).isEmpty())
+      throw new AssertionError("Filtro no lado preservado do LEFT JOIN incorreto");
+    var nullable = DuckDbFederatedExecutor.nullFilters(
+        "SELECT C.ID FROM SRV_MATRIZ.CAD_CLI0 C LEFT JOIN SRV_MATRIZ.OUTRA D ON C.ID = D.ID WHERE D.ID IS NOT NULL", aliases);
+    if (!nullable.get(physical).isEmpty() || !nullable.get(other).isEmpty())
+      throw new AssertionError("Filtro indevido no lado não preservado");
+    var inner = DuckDbFederatedExecutor.nullFilters(
+        "SELECT C.ID FROM SRV_MATRIZ.CAD_CLI0 C INNER JOIN SRV_MATRIZ.OUTRA D ON C.ID = D.ID WHERE C.ID IS NOT NULL AND D.ID IS NOT NULL", aliases);
+    if (!java.util.Set.of("ID").equals(inner.get(physical)) || !java.util.Set.of("ID").equals(inner.get(other)))
+      throw new AssertionError("Filtros INNER JOIN incorretos");
+    var shared = DuckDbFederatedExecutor.nullFilters(
+        "SELECT C.ID FROM SRV_MATRIZ.CAD_CLI0 C LEFT JOIN SRV_MATRIZ.OUTRA D ON C.ID = D.ID WHERE C.ID IS NOT NULL UNION ALL SELECT ID FROM SRV_MATRIZ.CAD_CLI0", aliases);
+    if (!shared.get(physical).isEmpty()) throw new AssertionError("Filtro indevido entre ocorrências");
     var four = java.util.List.of("A","B","C","D");
     String federated = "SELECT ID FROM A.T UNION ALL SELECT ID FROM B.T UNION ALL SELECT ID FROM C.T UNION ALL SELECT ID FROM D.T";
     if (!"duckdb".equals(LinkSqlEmbeddedEngine.selectEngine(federated, "auto", four)))

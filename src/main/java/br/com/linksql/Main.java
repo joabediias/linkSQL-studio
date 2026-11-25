@@ -3048,11 +3048,15 @@ public class Main {
     JComboBox<String> encodings = new JComboBox<>(new String[]{"UTF-8", "ISO-8859-1"});
     JCheckBox header = new JCheckBox("Incluir cabecalho", true);
     JCheckBox includeQuote = new JCheckBox("Incluir quote", true);
-    JPanel options = new JPanel(new GridLayout(4, 2, 8, 8));
+    JCheckBox allRows = new JCheckBox("Exportar consulta completa (executar novamente)", true);
+    boolean hasQuery = displayedResult != null && displayedResult.getClientProperty("sqlQueryKey") instanceof String;
+    allRows.setEnabled(hasQuery); allRows.setSelected(hasQuery);
+    JPanel options = new JPanel(new GridLayout(5, 2, 8, 8));
     options.add(new JLabel("Separador:")); options.add(separators);
     options.add(new JLabel("Codificacao:")); options.add(encodings);
     options.add(header); options.add(new JLabel());
     options.add(includeQuote); options.add(new JLabel());
+    options.add(allRows); options.add(new JLabel());
     if (JOptionPane.showConfirmDialog(frame, options, "Opcoes de exportacao CSV",
         JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) return;
     char separator = separators.getSelectedIndex() == 1 ? ',' : separators.getSelectedIndex() == 2 ? '|' : ';';
@@ -3067,10 +3071,55 @@ public class Main {
     if (Files.exists(path) && JOptionPane.showConfirmDialog(frame,
         "Sobrescrever " + path.getFileName() + "?", "Confirmar",
         JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
+    if (allRows.isSelected() && displayedResult != null) {
+      exportFullCsv((String) displayedResult.getClientProperty("sqlQueryKey"),
+          (String) displayedResult.getClientProperty("sqlDefaultSource"), path, charset, separator,
+          header.isSelected(), includeQuote.isSelected());
+      return;
+    }
     try {
       CsvExportWriter.write(table, path, charset, separator, header.isSelected(), includeQuote.isSelected());
       status.setText(" CSV exportado: " + path + " (" + table.getRowCount() + " linhas exibidas).");
     } catch (Exception ex) { showError(ex); }
+  }
+
+  private static void exportFullCsv(String sql, String alias, Path path,
+      java.nio.charset.Charset charset, char separator, boolean header, boolean quote) {
+    if (currentQuery != null && !currentQuery.isDone()) {
+      status.setText(" Aguarde ou cancele a consulta atual."); return;
+    }
+    try { ReadOnlySqlGuard.requireReadOnlySelect(sql); }
+    catch (SQLException ex) { showError(ex); return; }
+    releaseOtherCursors(null);
+    execute.setEnabled(false); executeScriptButton.setEnabled(false); cancelQueryButton.setEnabled(true);
+    CANCEL_REQUESTED.set(false);
+    status.setText(" Exportando consulta completa...");
+    currentQuery = new SwingWorker<Long, Void>() {
+      protected Long doInBackground() throws Exception {
+        try (Connection c = queryConnectionFor(sql, alias)) {
+          RUNNING_CONNECTION.set(c);
+          try (Statement st = c.createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
+            RUNNING_STATEMENT.set(st);
+            st.setQueryTimeout(SqlQueryTimeout.seconds());
+            NativeSqlRouter.Route route = nativeRoute(sql, alias);
+            if (route != null && route.type() == SqlDatabaseType.MYSQL) st.setFetchSize(Integer.MIN_VALUE);
+            else configureFetch(st, sql, 0);
+            if (isCancelled()) throw new java.util.concurrent.CancellationException();
+            try (ResultSet rs = st.executeQuery(route != null ? route.sql() : executableSql(sql))) {
+              return CsvExportWriter.write(rs, path, charset, separator, header, quote, this::isCancelled);
+            } finally { RUNNING_STATEMENT.compareAndSet(st, null); }
+          } finally { RUNNING_CONNECTION.compareAndSet(c, null); }
+        }
+      }
+      protected void done() {
+        if (currentQuery != this) return;
+        execute.setEnabled(true); executeScriptButton.setEnabled(true); cancelQueryButton.setEnabled(false);
+        try { status.setText(" CSV exportado: " + path + " (" + get() + " linhas)."); }
+        catch (java.util.concurrent.CancellationException ex) { status.setText(" Exportação cancelada."); }
+        catch (Exception ex) { showError(ex); }
+      }
+    };
+    currentQuery.execute();
   }
 
   private static void manageConnections() {

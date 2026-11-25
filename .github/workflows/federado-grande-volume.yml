@@ -1,0 +1,39 @@
+name: Regressão federada de grande volume
+
+on:
+  push:
+    branches: [feat/federado-grande-volume]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - '.github/workflows/federado-grande-volume.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  regressao:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Compilar
+        run: mvn -B test-compile
+      - name: Montar classpath
+        run: mvn -B 'org.apache.maven.plugins:maven-dependency-plugin:3.6.1:build-classpath' '-Dmdep.includeScope=test' '-Dmdep.outputFile=target/classpath.txt'
+      - name: Executar regressões
+        shell: pwsh
+        run: |
+          $deps = (Get-Content target/classpath.txt -Raw).Trim()
+          $cp = "target/test-classes;target/classes;$deps"
+          foreach ($test in @("LinkSqlCoreRegressionTest", "LinkSqlRelease40RegressionTest", "LinkSqlMigrationRegressionTest", "LinkSqlErrorDialogRegressionTest", "SqlQueryTimeoutRegressionTest", "DuckDbWorkspaceRegressionTest")) {
+            java -Xmx768m -cp $cp "br.com.linksql.$test"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

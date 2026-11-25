@@ -537,6 +537,10 @@ public class Main {
     toolbar = new JPanel(new LinkSqlWrapLayout(FlowLayout.LEFT, 6, 3));
     LinkSqlVisualStyle.surfacePanel(toolbar, "toolbar");
     for (JButton b : new JButton[]{execute, cancelQueryButton, formatSql, saveSql}) toolbar.add(b);
+    JButton diskExport = new JButton("Grande volume → CSV");
+    diskExport.setToolTipText("DuckDB experimental: exportar SELECT MySQL federado diretamente para CSV");
+    diskExport.addActionListener(e -> exportDuckDbCsv());
+    toolbar.add(diskExport);
 
     JMenuBar menuBar = new JMenuBar();
     JMenu fileMenu = new JMenu("Arquivo");
@@ -3081,6 +3085,57 @@ public class Main {
       CsvExportWriter.write(table, path, charset, separator, header.isSelected(), includeQuote.isSelected());
       status.setText(" CSV exportado: " + path + " (" + table.getRowCount() + " linhas exibidas).");
     } catch (Exception ex) { showError(ex); }
+  }
+
+  private static void exportDuckDbCsv() {
+    if (currentQuery != null && !currentQuery.isDone()) return;
+    JTextArea editor = activeEditor();
+    if (editor == null) return;
+    String selected = editor.getSelectedText();
+    if (selected == null || selected.isBlank()) selected = statementAtCaret(editor);
+    if (selected == null || selected.isBlank()) return;
+    final String sql = selected.strip().replaceFirst(";\\s*$", "");
+    try { DuckDbFederatedExecutor.tables(sql, CONNECTIONS.mysqlSourceNames()); }
+    catch (SQLException ex) { showError(ex); return; }
+    JFileChooser chooser = new JFileChooser();
+    chooser.setSelectedFile(defaultUserFile("resultado.csv"));
+    if (chooser.showSaveDialog(frame) != JFileChooser.APPROVE_OPTION) return;
+    Path chosen = chooser.getSelectedFile().toPath();
+    final Path output = chosen.toString().toLowerCase(Locale.ROOT).endsWith(".csv")
+        ? chosen : chosen.resolveSibling(chosen.getFileName() + ".csv");
+    if (Files.exists(output) && JOptionPane.showConfirmDialog(frame,
+        "Sobrescrever " + output.getFileName() + "?", "Confirmar", JOptionPane.YES_NO_OPTION)
+        != JOptionPane.YES_OPTION) return;
+    if (JOptionPane.showConfirmDialog(frame,
+        "Modo experimental MySQL: usa espaço em disco local para armazenar dados intermediários. "
+        + "O CSV será UTF-8, separado por ponto e vírgula, com cabeçalho. Continuar?",
+        "DuckDB — grande volume", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
+    releaseOtherCursors(null);
+    execute.setEnabled(false); executeScriptButton.setEnabled(false); cancelQueryButton.setEnabled(true);
+    CANCEL_REQUESTED.set(false);
+    status.setText(" DuckDB: preparando dados das origens...");
+    currentQuery = new SwingWorker<Long, Void>() {
+      protected Long doInBackground() throws Exception {
+        Path temp = Path.of(System.getProperty("java.io.tmpdir"));
+        try (DuckDbWorkspace workspace = DuckDbFederatedExecutor.prepare(sql, CONNECTIONS,
+                 temp, 768, 2, this::isCancelled);
+             Statement st = workspace.connection().createStatement()) {
+          if (isCancelled()) throw new java.util.concurrent.CancellationException();
+          if (currentQuery == this) RUNNING_STATEMENT.set(st);
+          try (ResultSet rs = st.executeQuery(sql)) {
+            return CsvExportWriter.write(rs, output, StandardCharsets.UTF_8, ';', true, true, this::isCancelled);
+          } finally { RUNNING_STATEMENT.compareAndSet(st, null); }
+        }
+      }
+      protected void done() {
+        if (currentQuery != this) return;
+        execute.setEnabled(true); executeScriptButton.setEnabled(true); cancelQueryButton.setEnabled(false);
+        try { status.setText(" DuckDB: CSV exportado: " + output + " (" + get() + " linhas)."); }
+        catch (java.util.concurrent.CancellationException ex) { status.setText(" Exportação cancelada."); }
+        catch (Exception ex) { status.setText(" Falha na exportação DuckDB."); showError(ex); }
+      }
+    };
+    currentQuery.execute();
   }
 
   private static void exportFullCsv(String sql, String alias, Path path,

@@ -31,12 +31,13 @@ final class FederatedStreamingDataSource implements DataSource {
               if (value instanceof Statement statement && (method.getName().equals("createStatement")
                   || method.getName().equals("prepareStatement"))) {
                 try {
-                  int fetch = 1000;
+                  int fetch = Integer.getInteger("linksql.federated.fetch.rows", 500);
+                  fetch = Math.max(100, Math.min(2000, fetch));
                   if (type == SqlDatabaseType.MYSQL) {
                     boolean cursor = connection.isWrapperFor(com.mysql.cj.jdbc.JdbcConnection.class)
                         && connection.unwrap(com.mysql.cj.jdbc.JdbcConnection.class).getPropertySet()
                             .getBooleanProperty(com.mysql.cj.conf.PropertyKey.useCursorFetch).getValue();
-                    fetch = cursor ? 1000 : Integer.MIN_VALUE;
+                    fetch = cursor ? fetch : Integer.MIN_VALUE;
                   }
                   statement.setFetchSize(fetch);
                   statement.setQueryTimeout(SqlQueryTimeout.seconds());

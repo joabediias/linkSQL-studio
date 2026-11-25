@@ -64,7 +64,24 @@ final class DuckDbWorkspace implements AutoCloseable {
           }
           if (name.equals("isWrapperFor")) return ((Class<?>) args[0]).isInstance(proxy);
           if (closed.get()) throw new SQLException("Workspace fechado");
-          try { return method.invoke(connection, args); }
+          try {
+            Object result = method.invoke(connection, args);
+            if (result instanceof Statement st && name.equals("createStatement")) {
+              return java.lang.reflect.Proxy.newProxyInstance(Statement.class.getClassLoader(),
+                  new Class<?>[]{Statement.class}, (p, m, a) -> {
+                    try {
+                      if (a != null && a.length > 0 && a[0] instanceof String sql
+                          && (m.getName().equals("executeQuery") || m.getName().equals("execute"))) {
+                        ReadOnlySqlGuard.requireReadOnlySelect(sql);
+                        a = a.clone();
+                        a[0] = DuckDbSqlCompatibility.rewrite(sql);
+                      }
+                      return m.invoke(st, a);
+                    } catch (java.lang.reflect.InvocationTargetException ex) { throw ex.getCause(); }
+                  });
+            }
+            return result;
+          }
           catch (java.lang.reflect.InvocationTargetException ex) { throw ex.getCause(); }
         });
   }

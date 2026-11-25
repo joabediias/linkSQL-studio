@@ -96,10 +96,8 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
 
   static Connection openFederated(SqlConnectionRegistry registry, String sql, String mode,
       java.util.function.BooleanSupplier cancelled, java.util.function.Consumer<java.sql.Statement> active) throws SQLException {
-    if (!mode.equals("duckdb")) return registry.openFederatedQueryConnection(sql);
-    // Origens ainda não homologadas no DuckDB permanecem no Calcite.
-    try { DuckDbFederatedExecutor.tables(sql, registry.mysqlSourceNames()); }
-    catch (SQLException unsupported) { return registry.openFederatedQueryConnection(sql); }
+    if (!selectEngine(sql, mode, registry.mysqlSourceNames()).equals("duckdb"))
+      return registry.openFederatedQueryConnection(sql);
     DuckDbWorkspace workspace = null;
     try {
       var config = FederatedEngineSettings.effective();
@@ -115,6 +113,21 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
       if (ex instanceof SQLException se) throw se;
       throw new SQLException("Falha no motor DuckDB experimental", ex);
     }
+  }
+
+  /** Auto é conservador: somente consultas MySQL qualificadas com pelo menos
+   * quatro origens distintas são candidatas. Não repete consultas que falharam.
+   * O limite é heurístico, não uma estimativa de cardinalidade.
+   */
+  static String selectEngine(String sql, String mode, java.util.Collection<String> aliases) {
+    if (mode.equals("calcite")) return "calcite";
+    try {
+      var tables = DuckDbFederatedExecutor.tables(sql, aliases);
+      if (mode.equals("duckdb")) return "duckdb";
+      if (mode.equals("auto") && tables.stream().map(DuckDbFederatedExecutor.Table::source)
+          .distinct().count() >= 4) return "duckdb";
+    } catch (SQLException unsupported) { return "calcite"; }
+    return "calcite";
   }
 
   private Connection sourceConnection(String alias) throws SQLException {

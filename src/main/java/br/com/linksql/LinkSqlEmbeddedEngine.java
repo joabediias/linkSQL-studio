@@ -18,7 +18,7 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
   private final Connection metaConnection;
 
   public LinkSqlEmbeddedEngine(Path connectionsFile) throws SQLException {
-    this(connectionsFile, System.getProperty("linksql.federated.engine", "calcite"));
+    this(connectionsFile, FederatedEngineSettings.effective().mode());
   }
 
   public LinkSqlEmbeddedEngine(Path connectionsFile, String engineMode) throws SQLException {
@@ -91,9 +91,10 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
   private Query diskQuery(String sql) throws SQLException {
     DuckDbWorkspace workspace = null;
     try {
-      int memory = Integer.getInteger("linksql.duckdb.memory.mb", 768);
-      int threads = Integer.getInteger("linksql.duckdb.threads", 2);
-      Path temp = Path.of(System.getProperty("linksql.duckdb.temp", System.getProperty("java.io.tmpdir")));
+      var config = FederatedEngineSettings.effective();
+      int memory = config.memoryMb();
+      int threads = config.threads();
+      Path temp = config.temp();
       workspace = DuckDbFederatedExecutor.prepare(sql, registry, temp, memory, threads,
           () -> Thread.currentThread().isInterrupted());
       DuckDbSqlCompatibility.install(workspace.connection());

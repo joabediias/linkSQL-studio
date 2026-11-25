@@ -2174,7 +2174,7 @@ public class Main {
   }
 
   private static Connection openQueryConnection(String sql) throws SQLException {
-    return CONNECTIONS.openFederatedQueryConnection(sql);
+    return LinkSqlEmbeddedEngine.openFederated(CONNECTIONS, sql, FederatedEngineSettings.effective().mode());
   }
 
   private static void cancelRunningQuery() {

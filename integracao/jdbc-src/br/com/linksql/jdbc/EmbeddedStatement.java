@@ -17,7 +17,9 @@ final class EmbeddedStatement implements InvocationHandler {
   private final Object[] createArgs;
   private Statement proxy;
   private Connection activeConnection;
-  private Statement activeStatement;
+  private volatile Statement activeStatement;
+  private volatile Statement stagingStatement;
+  private volatile boolean cancelled;
   private int fetchSize = 500;
   private int timeout = 120;
   private int maxRows = 0;
@@ -59,9 +61,13 @@ final class EmbeddedStatement implements InvocationHandler {
   private ResultSet execute(String sql) throws SQLException {
     ensureOpen();
     closeActive();
-    LinkSqlEmbeddedEngine.Query query = engine.plan(sql);
+    cancelled = false;
+    LinkSqlEmbeddedEngine.Query query;
+    try { query = engine.plan(sql, () -> cancelled || Thread.currentThread().isInterrupted(), st -> stagingStatement = st); }
+    finally { stagingStatement = null; }
     activeConnection = query.connection();
     try {
+      if (cancelled) throw new SQLException("Consulta cancelada", "57014");
       // Calcite nem sempre aceita setReadOnly, mas os comandos sao validados.
       try { activeConnection.setReadOnly(true); } catch (SQLException ignored) {}
       if (createArgs != null && createArgs.length >= 2) {
@@ -106,7 +112,7 @@ final class EmbeddedStatement implements InvocationHandler {
       case "setFetchDirection": if ((Integer) args[0] != ResultSet.FETCH_FORWARD) throw new SQLFeatureNotSupportedException(); return null;
       case "getWarnings": return activeStatement == null ? null : activeStatement.getWarnings();
       case "clearWarnings": if (activeStatement != null) activeStatement.clearWarnings(); return null;
-      case "cancel": if (activeStatement != null) activeStatement.cancel(); return null;
+      case "cancel": { cancelled = true; Statement staging = stagingStatement; if (staging != null) staging.cancel(); Statement running = activeStatement; if (running != null) running.cancel(); return null; }
       case "closeOnCompletion": if (activeStatement != null) activeStatement.closeOnCompletion(); return null;
       case "isCloseOnCompletion": return activeStatement != null && activeStatement.isCloseOnCompletion();
       case "unwrap": {

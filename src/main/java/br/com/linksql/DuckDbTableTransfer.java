@@ -60,13 +60,13 @@ final class DuckDbTableTransfer {
     } finally { target.setAutoCommit(true); }
   }
 
-  // Datas e binários mantêm o caminho JDBC original até validar a equivalência.
+  // Decimais, datas e binários mantêm o caminho JDBC original até validar a equivalência.
   private static boolean appenderCompatible(ResultSetMetaData meta) throws SQLException {
     if (Boolean.getBoolean("linksql.duckdb.disableAppender")) return false;
     for (int i=1; i<=meta.getColumnCount(); i++) {
       switch (meta.getColumnType(i)) {
         case Types.TINYINT, Types.SMALLINT, Types.INTEGER, Types.BIGINT,
-             Types.DECIMAL, Types.NUMERIC, Types.FLOAT, Types.REAL, Types.DOUBLE,
+             Types.FLOAT, Types.REAL, Types.DOUBLE,
              Types.BOOLEAN, Types.BIT, Types.CHAR, Types.VARCHAR, Types.LONGVARCHAR,
              Types.NCHAR, Types.NVARCHAR, Types.LONGNVARCHAR, Types.CLOB, Types.NCLOB -> {}
         default -> { return false; }
@@ -90,13 +90,12 @@ final class DuckDbTableTransfer {
             if (!source.next()) { more = false; break; }
             out.beginRow();
             for (int i=1; i<=meta.getColumnCount(); i++) {
-              // DECIMAL usa BigDecimal nativo para manter precisão sem passar por double.
+              // Tipos não suportados pelo Appender são tratados pelo caminho JDBC.
               String value = source.getString(i);
               if (value == null) out.appendNull();
               else switch (meta.getColumnType(i)) {
                 case Types.TINYINT, Types.SMALLINT, Types.INTEGER -> out.append(source.getInt(i));
                 case Types.BIGINT -> out.append(source.getLong(i));
-                case Types.DECIMAL, Types.NUMERIC -> out.appendBigDecimal(source.getBigDecimal(i));
                 case Types.FLOAT, Types.REAL, Types.DOUBLE -> out.append(source.getDouble(i));
                 case Types.BOOLEAN, Types.BIT -> out.append(source.getBoolean(i));
                 default -> out.append(value);

@@ -65,7 +65,8 @@ public class VerificarFederacaoMysql {
         }
       }
       String large="SELECT id, SUM(limite) AS total FROM (SELECT id, limite FROM S1.volume UNION ALL SELECT id, limite FROM S2.volume UNION ALL SELECT id, limite FROM S3.volume UNION ALL SELECT id, limite FROM S4.volume) x GROUP BY id ORDER BY id";
-      System.setProperty("linksql.duckdb.memory.mb","128");
+      System.setProperty("linksql.duckdb.memory.mb","768");
+      System.setProperty("linksql.duckdb.threads","1");
       long start=System.nanoTime();
       try(Connection c=DriverManager.getConnection(url+"&engine=duckdb");Statement st=c.createStatement()) {
         st.setQueryTimeout(120);
@@ -81,7 +82,7 @@ public class VerificarFederacaoMysql {
       if(Files.exists(workspace)) try(var children=Files.list(workspace)) {
         if(children.findAny().isPresent()) throw new AssertionError("Workspace não removido após grande volume");
       }
-      System.out.println("OK: 560000 linhas de origem, 140000 resultados, DuckDB 128 MB, segundos="+((System.nanoTime()-start)/1e9));
+      System.out.println("OK: 560000 linhas de origem, 140000 resultados, DuckDB 768 MB, 1 thread, segundos="+((System.nanoTime()-start)/1e9));
     } finally {
       try(var paths=Files.walk(dir)) { for(var p:paths.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p); }
     }

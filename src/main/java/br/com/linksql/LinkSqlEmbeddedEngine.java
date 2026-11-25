@@ -137,7 +137,8 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
   }
 
   private Connection sourceConnection(String alias) throws SQLException {
-    return registry.source(alias).getConnection();
+    try { return registry.source(alias).getConnection(); }
+    catch (SQLException ex) { throw registry.connectionFailure(alias, "abertura de conexão nativa", ex); }
   }
 
   @Override public void close() { registry.close(); }

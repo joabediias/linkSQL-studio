@@ -171,8 +171,12 @@ public class Main {
   private static String executionLabel(String sql, String tabAlias) {
     NativeSqlRouter.Route route = nativeRoute(sql, tabAlias);
     if (route != null) return route.type() + " nativo (" + route.source() + ")";
-    return directSql(sql) == null
-        ? FederatedQuerySupport.executionLabel(sql, CONNECTIONS.allProfiles()) : "MySQL direto";
+    if (directSql(sql) != null) return "MySQL direto";
+    String configured = FederatedEngineSettings.effective().mode();
+    String selected = LinkSqlEmbeddedEngine.selectEngine(sql, configured, CONNECTIONS.mysqlSourceNames());
+    if (selected.equals("duckdb")) return "DuckDB federado (preparação em disco)";
+    String label = FederatedQuerySupport.executionLabel(sql, CONNECTIONS.allProfiles());
+    return configured.equals("duckdb") ? label + " | fallback: consulta não elegível ao DuckDB" : label;
   }
   private static DirectSql directSql(String sql) {
     return SqlQueryPlanner.directSql(sql, CONNECTIONS.mysqlSourceNames());
@@ -2870,7 +2874,7 @@ public class Main {
           showOrUpdateResultTab(model, elapsed, sqlTab, query, 0, pageSize, tabAlias, cursor);
           trimResultTabs(sqlTab, 1);
           String details = String.format(Locale.ROOT,
-              "Conexão %.2f s | SQL %.2f s | Leitura %.2f s",
+              "Preparação %.2f s | SQL %.2f s | Leitura %.2f s",
               phases[0] / 1e9, phases[1] / 1e9, phases[2] / 1e9);
           status.setText(" Consulta: " + formatRowCount(model.getRowCount()) + " linhas em "
               + String.format(Locale.ROOT, "%.2f s", elapsed) + " | " + details

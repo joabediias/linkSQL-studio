@@ -36,7 +36,12 @@ public final class LinkSqlDriver implements Driver {
       throw new SQLException("Arquivo de conexoes LinkSQL nao encontrado: " + config
           + ". Cadastre as conexoes no LinkSQL ou use ?config=CAMINHO_URL_ENCODED.", "08001");
     }
-    return EmbeddedConnection.open(config);
+    String mode = properties == null ? null : properties.getProperty("engine");
+    int q = url.indexOf('?');
+    if (q >= 0) for (String part : url.substring(q + 1).split("&"))
+      if (part.startsWith("engine=")) mode = URLDecoder.decode(part.substring(7), StandardCharsets.UTF_8);
+    if (mode == null || mode.isBlank()) mode = System.getProperty("linksql.federated.engine", "calcite");
+    return EmbeddedConnection.open(config, mode);
   }
 
   @Override public boolean acceptsURL(String url) {
@@ -70,10 +75,13 @@ public final class LinkSqlDriver implements Driver {
   @Override public DriverPropertyInfo[] getPropertyInfo(String url, Properties props) {
     DriverPropertyInfo config = new DriverPropertyInfo("config", "");
     config.description = "Caminho opcional para connections.json (na URL, use codificacao URL).";
-    return new DriverPropertyInfo[] { config };
+    DriverPropertyInfo engine = new DriverPropertyInfo("engine", "calcite");
+    engine.choices = new String[]{"calcite", "duckdb", "auto"};
+    engine.description = "Motor federado; DuckDB experimental para MySQL.";
+    return new DriverPropertyInfo[] { config, engine };
   }
   @Override public int getMajorVersion() { return 0; }
-  @Override public int getMinorVersion() { return 6; }
+  @Override public int getMinorVersion() { return 7; }
   @Override public boolean jdbcCompliant() { return false; }
   @Override public Logger getParentLogger() { return Logger.getLogger("br.com.linksql.jdbc"); }
 }

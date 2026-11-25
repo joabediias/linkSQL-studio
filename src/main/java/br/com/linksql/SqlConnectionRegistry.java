@@ -128,6 +128,19 @@ final class SqlConnectionRegistry {
     }
   }
 
+  SQLException connectionFailure(String alias, String stage, SQLException cause) {
+    JdbcConnectionProfile p = allProfiles().stream()
+        .filter(candidate -> candidate.name().equalsIgnoreCase(alias)).findFirst().orElse(null);
+    // Não registrar URL personalizada, usuário, senha ou parâmetros secretos.
+    String endpoint = p == null || p.host().isBlank() || !p.jdbcUrl().isBlank()
+        ? "" : " (" + p.host() + ":" + p.port() + ")";
+    Throwable root = cause;
+    for (int i=0; i<16 && root.getCause()!=null && root.getCause()!=root; i++) root=root.getCause();
+    return new SQLException("Origem " + alias + endpoint + " | etapa: " + stage
+        + " | " + cause.getMessage() + " | causa: " + root.getClass().getSimpleName()
+        + ": " + root.getMessage(), cause.getSQLState(), cause.getErrorCode(), cause);
+  }
+
   /** Teste isolado nao altera conexoes carregadas ou configurações. */
   String test(JdbcConnectionProfile profile, String password) throws Exception {
     profile.validate();
@@ -157,7 +170,8 @@ final class SqlConnectionRegistry {
       for (JdbcConnectionProfile profile : profilesSnapshot) {
         if (!needed.contains(profile.name().toUpperCase(Locale.ROOT))) continue;
         BasicDataSource ds = lazyConnections ? source(profile.name()) : sources.get(profile.name());
-        if (ds != null) addCalciteSchema(schemas, profile, ds);
+        if (ds != null) try { addCalciteSchema(schemas, profile, ds); }
+        catch (SQLException ex) { throw connectionFailure(profile.name(), "registro de schema Calcite", ex); }
       }
       return connection;
     } catch (Exception ex) {

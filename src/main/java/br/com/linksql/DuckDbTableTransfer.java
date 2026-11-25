@@ -23,6 +23,8 @@ final class DuckDbTableTransfer {
       stmt.execute("CREATE SCHEMA IF NOT EXISTS " + ident(schema));
       stmt.execute(ddl.append(")").toString());
     }
+    if (target instanceof org.duckdb.DuckDBConnection duck && appenderCompatible(meta))
+      return append(source, duck, schema, table, meta, cancelled);
     long count = 0;
     boolean auto = target.getAutoCommit();
     if (!auto) throw new SQLException("A transferência requer conexão local exclusiva.");
@@ -51,6 +53,60 @@ final class DuckDbTableTransfer {
         throw new java.util.concurrent.CancellationException("Transferência cancelada");
       if (count % 256 != 0) out.executeBatch();
       target.commit();
+      return count;
+    } catch (SQLException | RuntimeException ex) {
+      try { target.rollback(); } catch (SQLException rollback) { ex.addSuppressed(rollback); }
+      throw ex;
+    } finally { target.setAutoCommit(true); }
+  }
+
+  // Datas e binários mantêm o caminho JDBC original até validar a equivalência.
+  private static boolean appenderCompatible(ResultSetMetaData meta) throws SQLException {
+    if (Boolean.getBoolean("linksql.duckdb.disableAppender")) return false;
+    for (int i=1; i<=meta.getColumnCount(); i++) {
+      switch (meta.getColumnType(i)) {
+        case Types.TINYINT, Types.SMALLINT, Types.INTEGER, Types.BIGINT,
+             Types.DECIMAL, Types.NUMERIC, Types.FLOAT, Types.REAL, Types.DOUBLE,
+             Types.BOOLEAN, Types.BIT, Types.CHAR, Types.VARCHAR, Types.LONGVARCHAR,
+             Types.NCHAR, Types.NVARCHAR, Types.LONGNVARCHAR, Types.CLOB, Types.NCLOB -> {}
+        default -> { return false; }
+      }
+    }
+    return true;
+  }
+
+  private static long append(ResultSet source, org.duckdb.DuckDBConnection target,
+      String schema, String table, ResultSetMetaData meta, BooleanSupplier cancelled) throws SQLException {
+    long count = 0;
+    if (!target.getAutoCommit()) throw new SQLException("A transferência requer conexão local exclusiva.");
+    target.setAutoCommit(false);
+    try {
+      boolean more = true;
+      while (more) {
+        try (var out = target.createAppender(schema, table)) {
+          for (int row=0; row<8192; row++) {
+            if (cancelled.getAsBoolean() || Thread.currentThread().isInterrupted())
+              throw new java.util.concurrent.CancellationException("Transferência cancelada");
+            if (!source.next()) { more = false; break; }
+            out.beginRow();
+            for (int i=1; i<=meta.getColumnCount(); i++) {
+              // A conversão textual para DECIMAL mantém precisão sem passar por double.
+              String value = source.getString(i);
+              if (value == null) out.appendNull();
+              else switch (meta.getColumnType(i)) {
+                case Types.TINYINT, Types.SMALLINT, Types.INTEGER -> out.append(source.getInt(i));
+                case Types.BIGINT -> out.append(source.getLong(i));
+                case Types.FLOAT, Types.REAL, Types.DOUBLE -> out.append(source.getDouble(i));
+                case Types.BOOLEAN, Types.BIT -> out.append(source.getBoolean(i));
+                default -> out.append(value);
+              }
+            }
+            out.endRow();
+            count++;
+          }
+        }
+        target.commit();
+      }
       return count;
     } catch (SQLException | RuntimeException ex) {
       try { target.rollback(); } catch (SQLException rollback) { ex.addSuppressed(rollback); }

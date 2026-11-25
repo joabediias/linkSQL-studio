@@ -1,6 +1,8 @@
 name: LinkSQL portátil para teste no Windows
 
 on:
+  push:
+    branches: [feat/federado-grande-volume]
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
@@ -10,14 +12,14 @@ permissions:
 
 jobs:
   portatil-windows:
-    if: github.event.pull_request.head.repo.full_name == github.repository && (github.event.pull_request.head.ref == 'fix/roteamento-consultas-mysql' || github.event.pull_request.head.ref == 'feat/regexp-replace-local' || github.event.pull_request.head.ref == 'fix/timeout-consultas-15-min')
+    if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && (github.event.pull_request.head.ref == 'fix/roteamento-consultas-mysql' || github.event.pull_request.head.ref == 'feat/regexp-replace-local' || github.event.pull_request.head.ref == 'fix/timeout-consultas-15-min' || github.event.pull_request.head.ref == 'feat/federado-grande-volume'))
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
       - name: Baixar a versão em teste
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Configurar JDK
         uses: actions/setup-java@v4
@@ -34,10 +36,16 @@ jobs:
           $cp = 'target\test-classes;target\classes;target\distribuicao-input\lib\*'
           & java '-Djava.awt.headless=true' '-cp' $cp 'br.com.linksql.SqlQueryTimeoutRegressionTest'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Validar DuckDB no pacote
+        shell: powershell
+        run: |
+          $cp = 'target\test-classes;target\classes;target\distribuicao-input\lib\*'
+          & java '-Xmx768m' '-Djava.awt.headless=true' '-cp' $cp 'br.com.linksql.DuckDbWorkspaceRegressionTest'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Disponibilizar o executável com as dependências
         uses: actions/upload-artifact@v4
         with:
-          name: LinkSQL-4.0.0-PR${{ github.event.pull_request.number }}-portatil-windows-x64
+          name: LinkSQL-4.0.0-teste-${{ github.run_id }}-portatil-windows-x64
           path: target/distribuicao/
           if-no-files-found: error
           include-hidden-files: true

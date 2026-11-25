@@ -88,31 +88,105 @@ final class DuckDbFederatedExecutor {
     return new Projection(Set.copyOf(columns), all[0]);
   }
 
+  /**
+   * Pushdown de IS NOT NULL: somente SELECT com uma tabela física, sem JOIN.
+   * Uma tabela compartilhada por várias partes da consulta só recebe filtros
+   * presentes em todas as suas ocorrências. O SQL local mantém o filtro original.
+   */
+  static Map<Table, Set<String>> nullFilters(String sql, Collection<String> aliases) throws SQLException {
+    Map<String,String> sources = new HashMap<>();
+    for (String alias : aliases) sources.put(alias.toUpperCase(Locale.ROOT), alias);
+    Map<Table, Set<String>> common = new LinkedHashMap<>();
+    try {
+      SqlNode root = SqlParser.create(sql, SqlParser.config().withLex(Lex.MYSQL)).parseQuery();
+      root.accept(new SqlBasicVisitor<Void>() {
+        private Table table(SqlNode node) {
+          if (node instanceof SqlCall c && c.getKind() == SqlKind.AS) return table(c.operand(0));
+          if (!(node instanceof SqlIdentifier id) || id.names.size() != 2) return null;
+          String source = sources.get(id.names.get(0).toUpperCase(Locale.ROOT));
+          return source == null ? null : new Table(source, id.names.get(1));
+        }
+        private void merge(Table t, Set<String> filters) {
+          common.merge(t, new HashSet<>(filters), (a,b) -> { a.retainAll(b); return a; });
+        }
+        private void visitFrom(SqlNode node) {
+          if (node instanceof SqlJoin join) {
+            visitFrom(join.getLeft()); visitFrom(join.getRight());
+          } else {
+            Table t = table(node);
+            if (t != null) merge(t, Set.of());
+          }
+        }
+        private void collect(SqlNode node, String alias, Set<String> filters) {
+          if (!(node instanceof SqlCall c)) return;
+          if (c.getKind() == SqlKind.AND) {
+            for (SqlNode child : c.getOperandList()) collect(child, alias, filters);
+          } else if (c.getKind() == SqlKind.IS_NOT_NULL && c.operand(0) instanceof SqlIdentifier id) {
+            if (id.names.size() == 1 || (id.names.size() == 2 && id.names.get(0).equalsIgnoreCase(alias)))
+              filters.add(id.names.get(id.names.size()-1).toUpperCase(Locale.ROOT));
+          }
+        }
+        @Override public Void visit(SqlCall call) {
+          if (call instanceof SqlSelect select) {
+            SqlNode from = select.getFrom();
+            Table t = table(from);
+            if (t != null) {
+              String alias = from instanceof SqlCall c && c.getKind() == SqlKind.AS
+                  && c.operand(1) instanceof SqlIdentifier id ? id.getSimple() : t.name();
+              Set<String> filters = new HashSet<>();
+              collect(select.getWhere(), alias, filters);
+              merge(t, filters);
+            } else visitFrom(from);
+          }
+          return super.visit(call);
+        }
+      });
+    } catch (Exception ex) { throw new SQLException("Falha ao analisar filtros DuckDB", ex); }
+    for (Table a : common.keySet()) for (Table b : common.keySet())
+      if (!a.equals(b) && a.source().equalsIgnoreCase(b.source()) && a.name().equalsIgnoreCase(b.name())) {
+        common.get(a).clear(); common.get(b).clear();
+      }
+    return common;
+  }
+
   private static String mysqlIdentifier(String name) { return "`" + name.replace("`", "``") + "`"; }
 
   static String remoteSql(Statement st, Table table, Projection projection) throws SQLException {
     String name = mysqlIdentifier(table.name());
-    if (projection.all()) return "SELECT * FROM " + name;
+    return remoteSql(st, table, projection, Set.of());
+  }
+
+  static String remoteSql(Statement st, Table table, Projection projection, Set<String> filters) throws SQLException {
+    String name = mysqlIdentifier(table.name());
+    if (projection.all() && filters.isEmpty()) return "SELECT * FROM " + name;
     List<String> selected = new ArrayList<>();
     String first = null;
+    List<String> predicates = new ArrayList<>();
     try (ResultSet empty = st.executeQuery("SELECT * FROM " + name + " WHERE 1=0")) {
       ResultSetMetaData meta = empty.getMetaData();
       for (int i = 1; i <= meta.getColumnCount(); i++) {
         String column = meta.getColumnName(i);
         if (first == null) first = column;
         if (projection.includes(column)) selected.add(mysqlIdentifier(column));
+        // Não delegar datas: o driver pode converter datas zeradas em NULL.
+        int type = meta.getColumnType(i);
+        if (filters.contains(column.toUpperCase(Locale.ROOT)) && type != Types.DATE
+            && type != Types.TIMESTAMP && type != Types.TIME && type != Types.TIMESTAMP_WITH_TIMEZONE)
+          predicates.add(mysqlIdentifier(column) + " IS NOT NULL");
       }
     }
     // COUNT(*) e SELECT constante precisam preservar a cardinalidade da origem.
     if (selected.isEmpty() && first != null) selected.add(mysqlIdentifier(first));
-    return selected.isEmpty() ? "SELECT * FROM " + name
+    String query = projection.all() || selected.isEmpty() ? "SELECT * FROM " + name
         : "SELECT " + String.join(", ", selected) + " FROM " + name;
+    return predicates.isEmpty() ? query : query + " WHERE " + String.join(" AND ", predicates);
   }
 
   static DuckDbWorkspace prepare(String sql, SqlConnectionRegistry registry, Path parent,
       int memoryMb, int threads, BooleanSupplier cancelled) throws Exception {
     List<Table> tables = tables(sql, registry.mysqlSourceNames());
     Projection projection = projection(sql);
+    Map<Table, Set<String>> filters = nullFilters(sql, registry.mysqlSourceNames());
     DuckDbWorkspace workspace = DuckDbWorkspace.open(parent, memoryMb, threads);
     try {
       for (Table table : tables) {
@@ -121,7 +195,7 @@ final class DuckDbFederatedExecutor {
         try (Connection remote = new FederatedStreamingDataSource(registry.source(table.source()),
                  SqlDatabaseType.MYSQL).getConnection();
              Statement st = remote.createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
-          try (ResultSet rows = st.executeQuery(remoteSql(st, table, projection))) {
+          try (ResultSet rows = st.executeQuery(remoteSql(st, table, projection, filters.getOrDefault(table, Set.of())))) {
             DuckDbTableTransfer.copy(rows, workspace.connection(), table.source(), table.name(), cancelled);
           }
         }

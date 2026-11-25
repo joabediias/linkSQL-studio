@@ -1,0 +1,26 @@
+name: LinkSQL JDBC experimental 0.7
+on:
+  push:
+    branches: [feat/federado-grande-volume]
+permissions:
+  contents: read
+jobs:
+  bundle:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Gerar e testar bundle
+        shell: powershell
+        run: .\ferramentas\gerar-linksql-jdbc.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LinkSQL-JDBC-0.7-experimental
+          path: target/linksql-jdbc/
+          if-no-files-found: error
+          retention-days: 14

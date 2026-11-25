@@ -39,11 +39,17 @@ final class DuckDbTableTransfer {
           }
         }
         out.addBatch();
-        if (++count % 256 == 0) { out.executeBatch(); out.clearBatch(); }
+        if (++count % 256 == 0) {
+          out.executeBatch();
+          out.clearBatch();
+          // O workspace é descartável e só fica visível após preparar todas as tabelas.
+          // Evita manter uma transação de centenas de milhares de linhas em memória.
+          if (count % 8192 == 0) target.commit();
+        }
       }
       if (cancelled.getAsBoolean() || Thread.currentThread().isInterrupted())
         throw new java.util.concurrent.CancellationException("Transferência cancelada");
-      out.executeBatch();
+      if (count % 256 != 0) out.executeBatch();
       target.commit();
       return count;
     } catch (SQLException | RuntimeException ex) {

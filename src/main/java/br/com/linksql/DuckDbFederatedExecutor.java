@@ -11,6 +11,7 @@ import org.apache.calcite.config.Lex;
 
 /** Experimental: materializa tabelas qualificadas de origens MySQL em disco. */
 final class DuckDbFederatedExecutor {
+  private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(DuckDbFederatedExecutor.class.getName());
   private DuckDbFederatedExecutor() {}
   record Table(String source, String name) {}
 
@@ -194,7 +195,11 @@ final class DuckDbFederatedExecutor {
     Map<Table, Set<String>> filters = nullFilters(sql, registry.mysqlSourceNames());
     DuckDbWorkspace workspace = DuckDbWorkspace.open(parent, memoryMb, threads);
     try {
+      int ordinal = 0;
       for (Table table : tables) {
+        long started = System.nanoTime();
+        int position = ++ordinal;
+        LOG.info(() -> "DuckDB preparação " + position + "/" + tables.size() + " " + table.source() + "." + table.name());
         if (cancelled.getAsBoolean() || Thread.currentThread().isInterrupted())
           throw new java.util.concurrent.CancellationException("Consulta cancelada");
         try (Connection remote = new FederatedStreamingDataSource(registry.source(table.source()),
@@ -202,8 +207,14 @@ final class DuckDbFederatedExecutor {
              Statement st = remote.createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
           active.accept(st);
           if (cancelled.getAsBoolean()) throw new java.util.concurrent.CancellationException();
+          long connected = System.nanoTime();
           try (ResultSet rows = st.executeQuery(remoteSql(st, table, projection, filters.getOrDefault(table, Set.of())))) {
-            DuckDbTableTransfer.copy(rows, workspace.connection(), table.source(), table.name(), cancelled);
+            long ready = System.nanoTime();
+            long count = DuckDbTableTransfer.copy(rows, workspace.connection(), table.source(), table.name(), cancelled);
+            LOG.info(() -> String.format(java.util.Locale.ROOT,
+                "DuckDB %s.%s: %d linhas | conexão %.2fs | consulta remota %.2fs | transferência %.2fs",
+                table.source(), table.name(), count, (connected-started)/1e9,
+                (ready-connected)/1e9, (System.nanoTime()-ready)/1e9));
           } finally { active.accept(null); }
         }
       }

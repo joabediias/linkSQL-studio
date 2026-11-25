@@ -48,10 +48,10 @@ enum SqlDatabaseType {
     String server = host.contains(":") && !host.startsWith("[") ? "[" + host + "]" : host;
     return switch (this) {
       case MYSQL -> "jdbc:mysql://" + server + ":" + port + "/" + database
-          + "?connectTimeout=5000&socketTimeout=120000&useSSL=false";
+          + "?connectTimeout=5000&socketTimeout=" + (SqlQueryTimeout.seconds() * 1000) + "&useSSL=false";
       case ORACLE -> "jdbc:oracle:thin:@//" + server + ":" + port + "/" + database;
       case POSTGRESQL -> "jdbc:postgresql://" + server + ":" + port + "/" + database
-          + "?connectTimeout=5&socketTimeout=120";
+          + "?connectTimeout=5&socketTimeout=" + SqlQueryTimeout.seconds();
       case SQLSERVER -> "jdbc:sqlserver://" + server + ":" + port + ";databaseName=" + database
           + ";encrypt=true;trustServerCertificate=false;loginTimeout=5";
       case FIREBIRD -> "jdbc:firebirdsql://" + server + ":" + port + "/" + database;

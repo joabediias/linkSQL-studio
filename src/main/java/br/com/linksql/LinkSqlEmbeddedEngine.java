@@ -96,6 +96,12 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
 
   static Connection openFederated(SqlConnectionRegistry registry, String sql, String mode,
       java.util.function.BooleanSupplier cancelled, java.util.function.Consumer<java.sql.Statement> active) throws SQLException {
+    return openFederated(registry, sql, mode, cancelled, active, message -> {});
+  }
+
+  static Connection openFederated(SqlConnectionRegistry registry, String sql, String mode,
+      java.util.function.BooleanSupplier cancelled, java.util.function.Consumer<java.sql.Statement> active,
+      java.util.function.Consumer<String> progress) throws SQLException {
     if (!selectEngine(sql, mode, registry.mysqlSourceNames()).equals("duckdb"))
       return registry.openFederatedQueryConnection(sql);
     DuckDbWorkspace workspace = null;
@@ -105,7 +111,7 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
       int threads = config.threads();
       Path temp = config.temp();
       workspace = DuckDbFederatedExecutor.prepare(sql, registry, temp, memory, threads,
-          cancelled, active);
+          cancelled, active, progress);
       DuckDbSqlCompatibility.install(workspace.connection());
       return workspace.managedConnection();
     } catch (Exception ex) {

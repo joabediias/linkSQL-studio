@@ -74,6 +74,11 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
   public Connection metadataConnection() { return metaConnection; }
 
   public Query plan(String original) throws SQLException {
+    return plan(original, () -> Thread.currentThread().isInterrupted(), st -> {});
+  }
+
+  public Query plan(String original, java.util.function.BooleanSupplier cancelled,
+      java.util.function.Consumer<java.sql.Statement> active) throws SQLException {
     ReadOnlySqlGuard.requireReadOnlySelect(original);
     String sql = original.strip();
     if (sql.endsWith(";")) sql = sql.substring(0, sql.length() - 1).stripTrailing();
@@ -82,10 +87,15 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
     if (nativeRoute != null) return new Query(sourceConnection(nativeRoute.source()), nativeRoute.sql());
     if (mysqlRoute != null) return new Query(sourceConnection(mysqlRoute.source()),
         SqlQueryPlanner.executableSql(sql, registry.mysqlSourceNames()));
-    return new Query(openFederated(registry, sql, mode), sql);
+    return new Query(openFederated(registry, sql, mode, cancelled, active), sql);
   }
 
   static Connection openFederated(SqlConnectionRegistry registry, String sql, String mode) throws SQLException {
+    return openFederated(registry, sql, mode, () -> Thread.currentThread().isInterrupted(), st -> {});
+  }
+
+  static Connection openFederated(SqlConnectionRegistry registry, String sql, String mode,
+      java.util.function.BooleanSupplier cancelled, java.util.function.Consumer<java.sql.Statement> active) throws SQLException {
     if (!mode.equals("duckdb")) return registry.openFederatedQueryConnection(sql);
     // Origens ainda não homologadas no DuckDB permanecem no Calcite.
     try { DuckDbFederatedExecutor.tables(sql, registry.mysqlSourceNames()); }
@@ -97,7 +107,7 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
       int threads = config.threads();
       Path temp = config.temp();
       workspace = DuckDbFederatedExecutor.prepare(sql, registry, temp, memory, threads,
-          () -> Thread.currentThread().isInterrupted());
+          cancelled, active);
       DuckDbSqlCompatibility.install(workspace.connection());
       return workspace.managedConnection();
     } catch (Exception ex) {

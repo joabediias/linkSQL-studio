@@ -90,12 +90,13 @@ final class DuckDbTableTransfer {
             if (!source.next()) { more = false; break; }
             out.beginRow();
             for (int i=1; i<=meta.getColumnCount(); i++) {
-              // A conversão textual para DECIMAL mantém precisão sem passar por double.
+              // DECIMAL usa BigDecimal nativo para manter precisão sem passar por double.
               String value = source.getString(i);
               if (value == null) out.appendNull();
               else switch (meta.getColumnType(i)) {
                 case Types.TINYINT, Types.SMALLINT, Types.INTEGER -> out.append(source.getInt(i));
                 case Types.BIGINT -> out.append(source.getLong(i));
+                case Types.DECIMAL, Types.NUMERIC -> out.appendBigDecimal(source.getBigDecimal(i));
                 case Types.FLOAT, Types.REAL, Types.DOUBLE -> out.append(source.getDouble(i));
                 case Types.BOOLEAN, Types.BIT -> out.append(source.getBoolean(i));
                 default -> out.append(value);

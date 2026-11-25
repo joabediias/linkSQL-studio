@@ -24,3 +24,42 @@ jobs:
           path: target/linksql-jdbc/
           if-no-files-found: error
           retention-days: 14
+
+  federacao-mysql:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: bundle
+    services:
+      mysql:
+        image: mysql:5.7
+        env:
+          MYSQL_ROOT_PASSWORD: linksql_test_only
+          MYSQL_ROOT_HOST: '%'
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -uroot -plinksql_test_only"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=15
+    env:
+      LINKSQL_TEST_PASSWORD: linksql_test_only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - uses: actions/download-artifact@v4
+        with:
+          name: LinkSQL-JDBC-0.7-experimental
+          path: bundle
+      - name: Obter driver MySQL externo
+        run: mvn -B org.apache.maven.plugins:maven-dependency-plugin:3.6.1:copy -Dartifact=com.mysql:mysql-connector-j:8.4.0 -DoutputDirectory=target/test-drivers
+      - name: Testar ResultSet federado do bundle
+        shell: bash
+        run: |
+          mkdir -p target/e2e
+          javac -d target/e2e integracao/linksql-jdbc/testes/VerificarFederacaoMysql.java
+          java -Xmx768m -Djava.awt.headless=true -cp 'target/e2e:bundle/*:target/test-drivers/*' VerificarFederacaoMysql

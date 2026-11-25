@@ -62,4 +62,12 @@ jobs:
         run: |
           mkdir -p target/e2e
           javac -d target/e2e integracao/linksql-jdbc/testes/VerificarFederacaoMysql.java
-          java -Xmx768m -Djava.awt.headless=true -cp 'target/e2e:bundle/*:target/test-drivers/*' VerificarFederacaoMysql
+          java -Xmx768m -Djava.awt.headless=true -cp 'target/e2e:bundle/*:target/test-drivers/*' VerificarFederacaoMysql &
+          pid=$!
+          ( sleep 90; if kill -0 "$pid" 2>/dev/null; then jstack "$pid" || true; kill -TERM "$pid"; fi ) &
+          watchdog=$!
+          set +e
+          wait "$pid"
+          result=$?
+          kill "$watchdog" 2>/dev/null || true
+          exit "$result"

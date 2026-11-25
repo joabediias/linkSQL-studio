@@ -6,9 +6,13 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.sql.*;
 import java.util.logging.Logger;
+import java.util.concurrent.atomic.LongAdder;
 
 /** Configura somente conexões emprestadas ao Calcite, sem mudar o executor nativo. */
 final class FederatedStreamingDataSource implements DataSource {
+  private static final Logger LOG = Logger.getLogger(FederatedStreamingDataSource.class.getName());
+  private static final LongAdder REMOTE_STATEMENTS = new LongAdder();
+  static long remoteStatementCount() { return REMOTE_STATEMENTS.sum(); }
   private final DataSource source;
   private final SqlDatabaseType type;
   FederatedStreamingDataSource(DataSource source, SqlDatabaseType type) { this.source = source; this.type = type; }
@@ -37,6 +41,24 @@ final class FederatedStreamingDataSource implements DataSource {
                   statement.setFetchSize(fetch);
                   statement.setQueryTimeout(SqlQueryTimeout.seconds());
                 } catch (SQLException ex) { try { statement.close(); } catch (SQLException ignored) {} throw ex; }
+              }
+              if (value instanceof Statement statement && (method.getName().equals("createStatement")
+                  || method.getName().equals("prepareStatement"))) {
+                // Diagnóstico opt-in: não registrar SQL, parâmetros ou credenciais.
+                if (Boolean.getBoolean("linksql.federated.diagnostics")) {
+                  Class<?> api = statement instanceof PreparedStatement ? PreparedStatement.class : Statement.class;
+                  return Proxy.newProxyInstance(api.getClassLoader(), new Class<?>[]{api}, (p, m, a) -> {
+                    boolean execution = m.getName().startsWith("execute");
+                    long start = execution ? System.nanoTime() : 0L;
+                    if (execution) REMOTE_STATEMENTS.increment();
+                    try { return m.invoke(statement, a); }
+                    catch (InvocationTargetException ex) { throw ex.getCause(); }
+                    finally {
+                      if (execution) LOG.info("JDBC federado: origem=" + type + ", operacao=" + m.getName()
+                          + ", duracaoMs=" + ((System.nanoTime() - start) / 1_000_000L));
+                    }
+                  });
+                }
               }
               return value;
             } catch (InvocationTargetException ex) { throw ex.getCause(); }

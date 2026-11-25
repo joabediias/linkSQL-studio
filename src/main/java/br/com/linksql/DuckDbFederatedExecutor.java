@@ -90,7 +90,7 @@ final class DuckDbFederatedExecutor {
   }
 
   /**
-   * Pushdown de IS NOT NULL: somente SELECT com uma tabela física, sem JOIN.
+   * Pushdown de IS NOT NULL: tabela isolada ou lado preservado de JOIN, com referência qualificada.
    * Uma tabela compartilhada por várias partes da consulta só recebe filtros
    * presentes em todas as suas ocorrências. O SQL local mantém o filtro original.
    */
@@ -110,20 +110,30 @@ final class DuckDbFederatedExecutor {
         private void merge(Table t, Set<String> filters) {
           common.merge(t, new HashSet<>(filters), (a,b) -> { a.retainAll(b); return a; });
         }
-        private void visitFrom(SqlNode node) {
+        // Somente o lado preservado de LEFT/RIGHT JOIN pode receber
+        // filtros de WHERE sem alterar o conjunto de linhas do outro lado.
+        // Em INNER JOIN ambos os lados podem receber IS NOT NULL qualificado.
+        private void visitFrom(SqlNode node, SqlNode where, boolean eligible) {
           if (node instanceof SqlJoin join) {
-            visitFrom(join.getLeft()); visitFrom(join.getRight());
+            var kind = join.getJoinType();
+            visitFrom(join.getLeft(), where, eligible && (kind == JoinType.INNER || kind == JoinType.LEFT));
+            visitFrom(join.getRight(), where, eligible && (kind == JoinType.INNER || kind == JoinType.RIGHT));
           } else {
             Table t = table(node);
-            if (t != null) merge(t, Set.of());
+            if (t == null) return;
+            String alias = node instanceof SqlCall c && c.getKind() == SqlKind.AS
+                && c.operand(1) instanceof SqlIdentifier id ? id.getSimple() : t.name();
+            Set<String> filters = new HashSet<>();
+            if (eligible) collect(where, alias, filters, false);
+            merge(t, filters);
           }
         }
-        private void collect(SqlNode node, String alias, Set<String> filters) {
+        private void collect(SqlNode node, String alias, Set<String> filters, boolean unqualified) {
           if (!(node instanceof SqlCall c)) return;
           if (c.getKind() == SqlKind.AND) {
-            for (SqlNode child : c.getOperandList()) collect(child, alias, filters);
+            for (SqlNode child : c.getOperandList()) collect(child, alias, filters, unqualified);
           } else if (c.getKind() == SqlKind.IS_NOT_NULL && c.operand(0) instanceof SqlIdentifier id) {
-            if (id.names.size() == 1 || (id.names.size() == 2 && id.names.get(0).equalsIgnoreCase(alias)))
+            if ((unqualified && id.names.size() == 1) || (id.names.size() == 2 && id.names.get(0).equalsIgnoreCase(alias)))
               filters.add(id.names.get(id.names.size()-1).toUpperCase(Locale.ROOT));
           }
         }
@@ -135,9 +145,9 @@ final class DuckDbFederatedExecutor {
               String alias = from instanceof SqlCall c && c.getKind() == SqlKind.AS
                   && c.operand(1) instanceof SqlIdentifier id ? id.getSimple() : t.name();
               Set<String> filters = new HashSet<>();
-              collect(select.getWhere(), alias, filters);
+              collect(select.getWhere(), alias, filters, true);
               merge(t, filters);
-            } else visitFrom(from);
+            } else visitFrom(from, select.getWhere(), true);
           }
           return super.visit(call);
         }

@@ -184,6 +184,11 @@ final class DuckDbFederatedExecutor {
 
   static DuckDbWorkspace prepare(String sql, SqlConnectionRegistry registry, Path parent,
       int memoryMb, int threads, BooleanSupplier cancelled) throws Exception {
+    return prepare(sql, registry, parent, memoryMb, threads, cancelled, st -> {});
+  }
+
+  static DuckDbWorkspace prepare(String sql, SqlConnectionRegistry registry, Path parent,
+      int memoryMb, int threads, BooleanSupplier cancelled, java.util.function.Consumer<Statement> active) throws Exception {
     List<Table> tables = tables(sql, registry.mysqlSourceNames());
     Projection projection = projection(sql);
     Map<Table, Set<String>> filters = nullFilters(sql, registry.mysqlSourceNames());
@@ -195,9 +200,11 @@ final class DuckDbFederatedExecutor {
         try (Connection remote = new FederatedStreamingDataSource(registry.source(table.source()),
                  SqlDatabaseType.MYSQL).getConnection();
              Statement st = remote.createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
+          active.accept(st);
+          if (cancelled.getAsBoolean()) throw new java.util.concurrent.CancellationException();
           try (ResultSet rows = st.executeQuery(remoteSql(st, table, projection, filters.getOrDefault(table, Set.of())))) {
             DuckDbTableTransfer.copy(rows, workspace.connection(), table.source(), table.name(), cancelled);
-          }
+          } finally { active.accept(null); }
         }
       }
       return workspace;

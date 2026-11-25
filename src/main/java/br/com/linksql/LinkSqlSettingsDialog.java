@@ -19,10 +19,10 @@ final class LinkSqlSettingsDialog {
     LinkSqlDialogStyle.button(save, "save", true);
     LinkSqlDialogStyle.button(restore, "history", false);
     LinkSqlDialogStyle.button(cancel, "close", false);
-    restore.addActionListener(e -> form.setValues(LinkSqlSettings.defaults()));
+    restore.addActionListener(e -> { form.setValues(LinkSqlSettings.defaults()); form.setFederation(new FederatedEngineSettings.Config("calcite",768,2,java.nio.file.Path.of(System.getProperty("java.io.tmpdir")))); });
     cancel.addActionListener(e -> dialog.dispose());
     save.addActionListener(e -> {
-      try { result[0] = form.read(); dialog.dispose(); }
+      try { var options = form.read(); FederatedEngineSettings.save(form.readFederation()); result[0] = options; dialog.dispose(); }
       catch (Exception ex) { JOptionPane.showMessageDialog(dialog,
           ex.getMessage() == null ? "Verifique os valores informados." : ex.getMessage(),
           "Configuração inválida", JOptionPane.WARNING_MESSAGE); }
@@ -50,6 +50,10 @@ final class LinkSqlSettingsDialog {
     final JSpinner completionDelay = new JSpinner(new SpinnerNumberModel(420, 150, 2000, 50));
     final JSpinner fontSize = new JSpinner(new SpinnerNumberModel(14, 10, 28, 1));
     final JSpinner filterDelay = new JSpinner(new SpinnerNumberModel(300, 100, 2000, 50));
+    final JComboBox<String> engine = new JComboBox<>(new String[]{"calcite", "duckdb", "auto"});
+    final JSpinner memory = new JSpinner(new SpinnerNumberModel(768,128,2048,128));
+    final JSpinner threads = new JSpinner(new SpinnerNumberModel(2,1,8,1));
+    final JTextField temporary = new JTextField();
     final JPanel footer = new JPanel(new BorderLayout(0, 10));
     Form(LinkSqlSettings.Snapshot current) {
       super(new BorderLayout(0, 16));
@@ -94,12 +98,40 @@ final class LinkSqlSettingsDialog {
       categories.putClientProperty("JTabbedPane.tabHeight", 42);
       categories.addTab("Aparência e editor", sectionScroll(appearance));
       categories.addTab("Consultas e execução", sectionScroll(queries));
+      JPanel federation = sections();
+      JPanel controls = rows();
+      controls.add(option("Motor federado", "Calcite (padrão), DuckDB experimental para MySQL ou automático (Calcite por enquanto).", engine));
+      controls.add(option("Memória DuckDB (MB)", "Limite do gerenciador de memória do DuckDB; não é o limite total do processo.", memory));
+      controls.add(option("Threads DuckDB", "Quantidade de threads de processamento.", threads));
+      controls.add(option("Diretório temporário", "Área de trabalho local para dados intermediários.", temporary));
+      JButton browse = new JButton("Escolher diretório...");
+      browse.addActionListener(e -> {
+        JFileChooser chooser = new JFileChooser(temporary.getText());
+        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION)
+          temporary.setText(chooser.getSelectedFile().getAbsolutePath());
+      });
+      controls.add(browse);
+      federation.add(LinkSqlDialogStyle.card("Motor federado", "Preferências compartilhadas com o LinkSQL JDBC no mesmo usuário. Reconecte o exportador para aplicar.", controls));
+      categories.addTab("Motor federado", sectionScroll(federation));
+      setFederation(FederatedEngineSettings.saved());
       add(categories, BorderLayout.CENTER);
       footer.setOpaque(false);
       JTextArea hint = LinkSqlDialogStyle.note("As alterações são aplicadas ao salvar.");
       hint.setBorder(null); footer.add(hint, BorderLayout.NORTH);
       add(footer, BorderLayout.SOUTH);
       setValues(current);
+    }
+    void setFederation(FederatedEngineSettings.Config config) {
+      engine.setSelectedItem(config.mode()); memory.setValue(config.memoryMb());
+      threads.setValue(config.threads()); temporary.setText(config.temp().toString());
+    }
+    FederatedEngineSettings.Config readFederation() throws java.text.ParseException {
+      memory.commitEdit(); threads.commitEdit();
+      if (temporary.getText().isBlank()) throw new IllegalArgumentException("Informe o diretório temporário.");
+      return new FederatedEngineSettings.Config(String.valueOf(engine.getSelectedItem()),
+          ((Number)memory.getValue()).intValue(), ((Number)threads.getValue()).intValue(),
+          java.nio.file.Path.of(temporary.getText().trim()));
     }
     void setValues(LinkSqlSettings.Snapshot value) {
       dark.setSelected(value.darkMode()); light.setSelected(!value.darkMode());

@@ -44,6 +44,31 @@ final class DuckDbWorkspace implements AutoCloseable {
 
   Connection connection() { return connection; }
 
+  /** O cliente JDBC é proprietário da conexão e do diretório temporário. */
+  Connection managedConnection() {
+    var closed = new java.util.concurrent.atomic.AtomicBoolean();
+    return (Connection) java.lang.reflect.Proxy.newProxyInstance(
+        Connection.class.getClassLoader(), new Class<?>[]{Connection.class}, (proxy, method, args) -> {
+          String name = method.getName();
+          if (name.equals("close")) {
+            if (closed.compareAndSet(false, true)) {
+              try { close(); } catch (IOException ex) { throw new SQLException("Falha ao limpar workspace", ex); }
+            }
+            return null;
+          }
+          if (name.equals("isClosed")) return closed.get() || connection.isClosed();
+          if (name.equals("unwrap")) {
+            Class<?> type = (Class<?>) args[0];
+            if (type.isInstance(proxy)) return proxy;
+            throw new SQLException("Interface não suportada: " + type.getName());
+          }
+          if (name.equals("isWrapperFor")) return ((Class<?>) args[0]).isInstance(proxy);
+          if (closed.get()) throw new SQLException("Workspace fechado");
+          try { return method.invoke(connection, args); }
+          catch (java.lang.reflect.InvocationTargetException ex) { throw ex.getCause(); }
+        });
+  }
+
   @Override public void close() throws SQLException, IOException {
     try { connection.close(); }
     finally { deleteTree(directory); }

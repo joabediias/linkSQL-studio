@@ -14,9 +14,17 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
   public record Query(Connection connection, String sql) {}
   private static final ConcurrentHashMap<String, String> SESSION_PASSWORDS = new ConcurrentHashMap<>();
   private final SqlConnectionRegistry registry;
+  private final String mode;
   private final Connection metaConnection;
 
   public LinkSqlEmbeddedEngine(Path connectionsFile) throws SQLException {
+    this(connectionsFile, System.getProperty("linksql.federated.engine", "calcite"));
+  }
+
+  public LinkSqlEmbeddedEngine(Path connectionsFile, String engineMode) throws SQLException {
+    mode = engineMode.toLowerCase(java.util.Locale.ROOT);
+    if (!java.util.Set.of("calcite", "duckdb", "auto").contains(mode))
+      throw new SQLException("Motor federado inválido: " + engineMode);
     registry = new SqlConnectionRegistry(LinkSqlEmbeddedEngine::resolvePassword);
     try { metaConnection = registry.configureLazy(connectionsFile); }
     catch (Exception ex) {
@@ -74,7 +82,27 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
     if (nativeRoute != null) return new Query(sourceConnection(nativeRoute.source()), nativeRoute.sql());
     if (mysqlRoute != null) return new Query(sourceConnection(mysqlRoute.source()),
         SqlQueryPlanner.executableSql(sql, registry.mysqlSourceNames()));
+    if (mode.equals("duckdb")) return diskQuery(sql);
+    // Automático conserva a semântica do Calcite enquanto não houver
+    // critérios de roteamento DuckDB homologados.
     return new Query(registry.openFederatedQueryConnection(sql), sql);
+  }
+
+  private Query diskQuery(String sql) throws SQLException {
+    DuckDbWorkspace workspace = null;
+    try {
+      int memory = Integer.getInteger("linksql.duckdb.memory.mb", 768);
+      int threads = Integer.getInteger("linksql.duckdb.threads", 2);
+      Path temp = Path.of(System.getProperty("linksql.duckdb.temp", System.getProperty("java.io.tmpdir")));
+      workspace = DuckDbFederatedExecutor.prepare(sql, registry, temp, memory, threads,
+          () -> Thread.currentThread().isInterrupted());
+      DuckDbSqlCompatibility.install(workspace.connection());
+      return new Query(workspace.managedConnection(), DuckDbSqlCompatibility.rewrite(sql));
+    } catch (Exception ex) {
+      if (workspace != null) try { workspace.close(); } catch (Exception close) { ex.addSuppressed(close); }
+      if (ex instanceof SQLException se) throw se;
+      throw new SQLException("Falha no motor DuckDB experimental", ex);
+    }
   }
 
   private Connection sourceConnection(String alias) throws SQLException {

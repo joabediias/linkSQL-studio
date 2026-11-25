@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>br.com.linksql</groupId>
   <artifactId>linksql-jdbc-bundle</artifactId>
-  <version>0.6</version>
+  <version>0.7</version>
   <packaging>jar</packaging>
   <name>LinkSQL JDBC Embedded - Bundle</name>
   <properties>
@@ -15,6 +15,8 @@
   <!-- O driver SQL de cada fornecedor permanece nos oito JARs do exportador.
        O bundle possui apenas LinkSQL Engine, Calcite e dependencias de suporte. -->
   <dependencies>
+    <dependency><groupId>org.duckdb</groupId><artifactId>duckdb_jdbc</artifactId><version>1.3.2.0</version></dependency>
+    <dependency><groupId>com.mysql</groupId><artifactId>mysql-connector-j</artifactId><version>8.4.0</version><scope>provided</scope></dependency>
     <dependency>
       <groupId>org.apache.calcite</groupId><artifactId>calcite-core</artifactId><version>1.38.0</version>
     </dependency>

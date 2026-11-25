@@ -70,7 +70,7 @@ try {
         'SqlPageTotals', 'SqlQueryPlanner', 'SqlResultModels',
         'DatabaseCatalog', 'MysqlCompatDialect', 'FederatedMysqlCompatibility',
         'FederatedStreamingDataSource', 'SqlQueryTimeout', 'DuckDbWorkspace',
-        'DuckDbFederatedExecutor', 'DuckDbTableTransfer', 'DuckDbSqlCompatibility'
+        'DuckDbFederatedExecutor', 'DuckDbTableTransfer', 'DuckDbSqlCompatibility', 'FederatedEngineSettings'
     )
     $classesJDBC = @('LinkSqlDriver', 'EmbeddedConnection', 'EmbeddedStatement')
     $alvoModulo = Join-Path $modulo 'target'

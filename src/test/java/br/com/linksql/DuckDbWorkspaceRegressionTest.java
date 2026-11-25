@@ -15,6 +15,21 @@ public final class DuckDbWorkspaceRegressionTest {
       throw new AssertionError("Wildcard físico não preservado");
     if (!DuckDbFederatedExecutor.projection("SELECT A.ID FROM A.T A NATURAL JOIN B.T B").all())
       throw new AssertionError("NATURAL JOIN não preservado");
+    var aliases = java.util.List.of("SRV_MATRIZ");
+    var physical = new DuckDbFederatedExecutor.Table("SRV_MATRIZ", "CAD_CLI0");
+    var common = DuckDbFederatedExecutor.nullFilters(
+        "SELECT C.ID FROM SRV_MATRIZ.CAD_CLI0 C WHERE C.ID IS NOT NULL UNION ALL SELECT D.ID FROM SRV_MATRIZ.CAD_CLI0 D WHERE D.ID IS NOT NULL AND D.X IS NOT NULL", aliases);
+    if (!java.util.Set.of("ID").equals(common.get(physical)))
+      throw new AssertionError("Interseção de filtros incorreta");
+    var mixed = DuckDbFederatedExecutor.nullFilters(
+        "SELECT ID FROM SRV_MATRIZ.CAD_CLI0 WHERE ID IS NOT NULL UNION ALL SELECT ID FROM SRV_MATRIZ.CAD_CLI0", aliases);
+    if (!mixed.get(physical).isEmpty()) throw new AssertionError("Filtro indevido em tabela compartilhada");
+    var disjunction = DuckDbFederatedExecutor.nullFilters(
+        "SELECT ID FROM SRV_MATRIZ.CAD_CLI0 WHERE ID IS NOT NULL OR X IS NOT NULL", aliases);
+    if (!disjunction.get(physical).isEmpty()) throw new AssertionError("OR não deve ser delegado");
+    var joined = DuckDbFederatedExecutor.nullFilters(
+        "SELECT C.ID FROM SRV_MATRIZ.CAD_CLI0 C LEFT JOIN SRV_MATRIZ.OUTRA D ON C.ID = D.ID WHERE C.ID IS NOT NULL", aliases);
+    if (!joined.get(physical).isEmpty()) throw new AssertionError("Filtro indevido em JOIN");
     var dir = Files.createTempDirectory("linksql-duckdb-test-");
     try {
       var csv = dir.resolve("resultado.csv");

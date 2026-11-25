@@ -23,8 +23,33 @@ final class DuckDbTableTransfer {
       stmt.execute("CREATE SCHEMA IF NOT EXISTS " + ident(schema));
       stmt.execute(ddl.append(")").toString());
     }
-    if (target instanceof org.duckdb.DuckDBConnection duck && appenderCompatible(meta))
-      return append(source, duck, schema, table, meta, cancelled);
+    if (target instanceof org.duckdb.DuckDBConnection duck && appenderCompatible(meta)) {
+      boolean cast = false;
+      for (int i=1; i<=width; i++) if (requiresCast(meta.getColumnType(i))) cast = true;
+      if (!cast) return append(source, duck, schema, table, meta, cancelled);
+      // Área intermediária textual para tipos exatos que o Appender 1.3.2 não aceita.
+      // Converte em SQL tipado, sem arredondamento por double.
+      String staging = "_linksql_stage_" + java.util.UUID.randomUUID().toString().replace("-", "");
+      String stageName = ident(schema) + "." + ident(staging);
+      var stageDdl = new java.util.StringJoiner(", ");
+      var expressions = new java.util.StringJoiner(", ");
+      for (int i=1; i<=width; i++) {
+        String column = ident(meta.getColumnLabel(i));
+        String sqlType = type(meta, i);
+        boolean convert = requiresCast(meta.getColumnType(i));
+        stageDdl.add(column + " " + (convert ? "VARCHAR" : sqlType));
+        expressions.add(convert ? "CAST(" + column + " AS " + sqlType + ")" : column);
+      }
+      try (Statement st = target.createStatement()) {
+        st.execute("CREATE TABLE " + stageName + " (" + stageDdl + ")");
+        long rows = append(source, duck, schema, staging, meta, cancelled);
+        if (cancelled.getAsBoolean() || Thread.currentThread().isInterrupted())
+          throw new java.util.concurrent.CancellationException("Transferência cancelada");
+        st.executeUpdate("INSERT INTO " + name + " SELECT " + expressions + " FROM " + stageName);
+        st.execute("DROP TABLE " + stageName);
+        return rows;
+      }
+    }
     long count = 0;
     boolean auto = target.getAutoCommit();
     if (!auto) throw new SQLException("A transferência requer conexão local exclusiva.");
@@ -60,13 +85,18 @@ final class DuckDbTableTransfer {
     } finally { target.setAutoCommit(true); }
   }
 
-  // Decimais, datas e binários mantêm o caminho JDBC original até validar a equivalência.
+  private static boolean requiresCast(int type) {
+    return type == Types.DECIMAL || type == Types.NUMERIC || type == Types.DATE || type == Types.TIME || type == Types.TIMESTAMP;
+  }
+
+  // Binários mantêm o caminho JDBC original até validar a equivalência.
   private static boolean appenderCompatible(ResultSetMetaData meta) throws SQLException {
     if (Boolean.getBoolean("linksql.duckdb.disableAppender")) return false;
     for (int i=1; i<=meta.getColumnCount(); i++) {
       switch (meta.getColumnType(i)) {
         case Types.TINYINT, Types.SMALLINT, Types.INTEGER, Types.BIGINT,
-             Types.FLOAT, Types.REAL, Types.DOUBLE,
+             Types.FLOAT, Types.REAL, Types.DOUBLE, Types.DECIMAL, Types.NUMERIC,
+             Types.DATE, Types.TIME, Types.TIMESTAMP,
              Types.BOOLEAN, Types.BIT, Types.CHAR, Types.VARCHAR, Types.LONGVARCHAR,
              Types.NCHAR, Types.NVARCHAR, Types.LONGNVARCHAR, Types.CLOB, Types.NCLOB -> {}
         default -> { return false; }

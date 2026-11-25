@@ -67,7 +67,10 @@ try {
         'ReadOnlySqlGuard', 'JdbcConnectionProfile', 'ConnectionVault', 'LinkSqlPaths', 'LinkSqlEmbeddedEngine',
         'NativeJdbcPaging', 'NativeQueryCount', 'NativeServerPaging', 'NativeSqlRouter',
         'SingleServerSqlRouter', 'SqlConnectionRegistry', 'SqlDatabaseType',
-        'SqlPageTotals', 'SqlQueryPlanner', 'SqlResultModels'
+        'SqlPageTotals', 'SqlQueryPlanner', 'SqlResultModels',
+        'DatabaseCatalog', 'MysqlCompatDialect', 'FederatedMysqlCompatibility',
+        'FederatedStreamingDataSource', 'SqlQueryTimeout', 'DuckDbWorkspace',
+        'DuckDbFederatedExecutor', 'DuckDbTableTransfer', 'DuckDbSqlCompatibility'
     )
     $classesJDBC = @('LinkSqlDriver', 'EmbeddedConnection', 'EmbeddedStatement')
     $alvoModulo = Join-Path $modulo 'target'

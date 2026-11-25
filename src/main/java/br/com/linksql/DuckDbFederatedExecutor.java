@@ -190,6 +190,12 @@ final class DuckDbFederatedExecutor {
 
   static DuckDbWorkspace prepare(String sql, SqlConnectionRegistry registry, Path parent,
       int memoryMb, int threads, BooleanSupplier cancelled, java.util.function.Consumer<Statement> active) throws Exception {
+    return prepare(sql, registry, parent, memoryMb, threads, cancelled, active, message -> {});
+  }
+
+  static DuckDbWorkspace prepare(String sql, SqlConnectionRegistry registry, Path parent,
+      int memoryMb, int threads, BooleanSupplier cancelled, java.util.function.Consumer<Statement> active,
+      java.util.function.Consumer<String> progress) throws Exception {
     List<Table> tables = tables(sql, registry.mysqlSourceNames());
     Projection projection = projection(sql);
     Map<Table, Set<String>> filters = nullFilters(sql, registry.mysqlSourceNames());
@@ -199,7 +205,9 @@ final class DuckDbFederatedExecutor {
       for (Table table : tables) {
         long started = System.nanoTime();
         int position = ++ordinal;
-        LOG.info(() -> "DuckDB preparação " + position + "/" + tables.size() + " " + table.source() + "." + table.name());
+        String stage = "DuckDB: transferindo " + position + "/" + tables.size() + " — " + table.source() + "." + table.name();
+        LOG.info(stage);
+        progress.accept(stage);
         if (cancelled.getAsBoolean() || Thread.currentThread().isInterrupted())
           throw new java.util.concurrent.CancellationException("Consulta cancelada");
         try (Connection remote = new FederatedStreamingDataSource(registry.source(table.source()),
@@ -218,6 +226,7 @@ final class DuckDbFederatedExecutor {
           } finally { active.accept(null); }
         }
       }
+      progress.accept("DuckDB: preparação concluída; executando SQL local");
       return workspace;
     } catch (Exception | Error ex) {
       try { workspace.close(); } catch (Exception close) { ex.addSuppressed(close); }

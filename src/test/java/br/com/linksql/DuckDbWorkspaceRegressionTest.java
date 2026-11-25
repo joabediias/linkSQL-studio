@@ -30,6 +30,16 @@ public final class DuckDbWorkspaceRegressionTest {
     var joined = DuckDbFederatedExecutor.nullFilters(
         "SELECT C.ID FROM SRV_MATRIZ.CAD_CLI0 C LEFT JOIN SRV_MATRIZ.OUTRA D ON C.ID = D.ID WHERE C.ID IS NOT NULL", aliases);
     if (!joined.get(physical).isEmpty()) throw new AssertionError("Filtro indevido em JOIN");
+    var four = java.util.List.of("A","B","C","D");
+    String federated = "SELECT ID FROM A.T UNION ALL SELECT ID FROM B.T UNION ALL SELECT ID FROM C.T UNION ALL SELECT ID FROM D.T";
+    if (!"duckdb".equals(LinkSqlEmbeddedEngine.selectEngine(federated, "auto", four)))
+      throw new AssertionError("Auto deve selecionar DuckDB para quatro origens elegíveis");
+    if (!"calcite".equals(LinkSqlEmbeddedEngine.selectEngine(federated, "calcite", four)))
+      throw new AssertionError("Modo Calcite deve permanecer explícito");
+    if (!"calcite".equals(LinkSqlEmbeddedEngine.selectEngine(federated, "auto", java.util.List.of("A","B","C"))))
+      throw new AssertionError("Origem não elegível deve permanecer no Calcite");
+    if (!"calcite".equals(LinkSqlEmbeddedEngine.selectEngine("SELECT ID FROM A.T UNION ALL SELECT ID FROM B.T", "auto", four)))
+      throw new AssertionError("Auto não deve transferir consultas pequenas indiscriminadamente");
     var dir = Files.createTempDirectory("linksql-duckdb-test-");
     try {
       var csv = dir.resolve("resultado.csv");

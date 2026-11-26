@@ -95,6 +95,14 @@ final class DuckDbFederatedExecutor {
    * presentes em todas as suas ocorrências. O SQL local mantém o filtro original.
    */
   static Map<Table, Set<String>> nullFilters(String sql, Collection<String> aliases) throws SQLException {
+    return commonFilters(sql, aliases, false);
+  }
+
+  static Map<Table, Set<String>> integerFilters(String sql, Collection<String> aliases) throws SQLException {
+    return commonFilters(sql, aliases, true);
+  }
+
+  private static Map<Table, Set<String>> commonFilters(String sql, Collection<String> aliases, boolean integers) throws SQLException {
     Map<String,String> sources = new HashMap<>();
     for (String alias : aliases) sources.put(alias.toUpperCase(Locale.ROOT), alias);
     Map<Table, Set<String>> common = new LinkedHashMap<>();
@@ -132,7 +140,19 @@ final class DuckDbFederatedExecutor {
           if (!(node instanceof SqlCall c)) return;
           if (c.getKind() == SqlKind.AND) {
             for (SqlNode child : c.getOperandList()) collect(child, alias, filters, unqualified);
-          } else if (c.getKind() == SqlKind.IS_NOT_NULL && c.operand(0) instanceof SqlIdentifier id) {
+          } else if (integers && c.getKind() == SqlKind.EQUALS) {
+            SqlNode left = c.operand(0), right = c.operand(1);
+            if (right instanceof SqlIdentifier) { SqlNode swap = left; left = right; right = swap; }
+            if (left instanceof SqlIdentifier id && right instanceof SqlNumericLiteral literal
+                && literal.isExact() && ((unqualified && id.names.size() == 1)
+                || (id.names.size() == 2 && id.names.get(0).equalsIgnoreCase(alias)))) {
+              try {
+                int value = literal.bigDecimalValue().intValueExact();
+                String column = id.names.get(id.names.size()-1).toUpperCase(Locale.ROOT);
+                if (!column.contains("=")) filters.add(column + "=" + value);
+              } catch (ArithmeticException ignored) { /* apenas inteiros exatos */ }
+            }
+          } else if (!integers && c.getKind() == SqlKind.IS_NOT_NULL && c.operand(0) instanceof SqlIdentifier id) {
             if ((unqualified && id.names.size() == 1) || (id.names.size() == 2 && id.names.get(0).equalsIgnoreCase(alias)))
               filters.add(id.names.get(id.names.size()-1).toUpperCase(Locale.ROOT));
           }
@@ -168,8 +188,13 @@ final class DuckDbFederatedExecutor {
   }
 
   static String remoteSql(Statement st, Table table, Projection projection, Set<String> filters) throws SQLException {
+    return remoteSql(st, table, projection, filters, Set.of());
+  }
+
+  static String remoteSql(Statement st, Table table, Projection projection, Set<String> filters,
+      Set<String> integers) throws SQLException {
     String name = mysqlIdentifier(table.name());
-    if (projection.all() && filters.isEmpty()) return "SELECT * FROM " + name;
+    if (projection.all() && filters.isEmpty() && integers.isEmpty()) return "SELECT * FROM " + name;
     List<String> selected = new ArrayList<>();
     String first = null;
     List<String> predicates = new ArrayList<>();
@@ -184,6 +209,16 @@ final class DuckDbFederatedExecutor {
         if (filters.contains(column.toUpperCase(Locale.ROOT)) && type != Types.DATE
             && type != Types.TIMESTAMP && type != Types.TIME && type != Types.TIMESTAMP_WITH_TIMEZONE)
           predicates.add(mysqlIdentifier(column) + " IS NOT NULL");
+        // Somente tipos inteiros com sinal e representação local equivalente.
+        // BIT, booleanos, texto, decimais e inteiros sem sinal ficam no DuckDB.
+        if (meta.isSigned(i) && (type == Types.TINYINT || type == Types.SMALLINT
+            || type == Types.INTEGER || type == Types.BIGINT)) {
+          for (String predicate : integers) {
+            int separator = predicate.lastIndexOf('=');
+            if (separator > 0 && predicate.substring(0, separator).equals(column.toUpperCase(Locale.ROOT)))
+              predicates.add(mysqlIdentifier(column) + " = " + Integer.parseInt(predicate.substring(separator+1)));
+          }
+        }
       }
     }
     // COUNT(*) e SELECT constante precisam preservar a cardinalidade da origem.
@@ -209,6 +244,7 @@ final class DuckDbFederatedExecutor {
     List<Table> tables = tables(sql, registry.mysqlSourceNames());
     Projection projection = projection(sql);
     Map<Table, Set<String>> filters = nullFilters(sql, registry.mysqlSourceNames());
+    Map<Table, Set<String>> integers = integerFilters(sql, registry.mysqlSourceNames());
     DuckDbWorkspace workspace = DuckDbWorkspace.open(parent, memoryMb, threads);
     try {
       int ordinal = 0;
@@ -226,13 +262,15 @@ final class DuckDbFederatedExecutor {
           active.accept(st);
           if (cancelled.getAsBoolean()) throw new java.util.concurrent.CancellationException();
           long connected = System.nanoTime();
-          try (ResultSet rows = st.executeQuery(remoteSql(st, table, projection, filters.getOrDefault(table, Set.of())))) {
+          try (ResultSet rows = st.executeQuery(remoteSql(st, table, projection, filters.getOrDefault(table, Set.of()), integers.getOrDefault(table, Set.of())))) {
             long ready = System.nanoTime();
             long count = DuckDbTableTransfer.copy(rows, workspace.connection(), table.source(), table.name(), cancelled);
-            LOG.info(() -> String.format(java.util.Locale.ROOT,
+            String detail = String.format(java.util.Locale.ROOT,
                 "DuckDB %s.%s: %d linhas | conexão %.2fs | consulta remota %.2fs | transferência %.2fs",
                 table.source(), table.name(), count, (connected-started)/1e9,
-                (ready-connected)/1e9, (System.nanoTime()-ready)/1e9));
+                (ready-connected)/1e9, (System.nanoTime()-ready)/1e9);
+            LOG.info(detail);
+            progress.accept(detail);
           } finally { active.accept(null); }
         } catch (SQLException ex) {
           throw registry.connectionFailure(table.source(), "preparação DuckDB: " + table.name(), ex);

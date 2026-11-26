@@ -79,15 +79,22 @@ public final class LinkSqlEmbeddedEngine implements AutoCloseable {
 
   public Query plan(String original, java.util.function.BooleanSupplier cancelled,
       java.util.function.Consumer<java.sql.Statement> active) throws SQLException {
+    return plan(original, cancelled, active, message -> {});
+  }
+
+  public Query plan(String original, java.util.function.BooleanSupplier cancelled,
+      java.util.function.Consumer<java.sql.Statement> active, java.util.function.Consumer<String> progress) throws SQLException {
     ReadOnlySqlGuard.requireReadOnlySelect(original);
     String sql = original.strip();
     if (sql.endsWith(";")) sql = sql.substring(0, sql.length() - 1).stripTrailing();
     NativeSqlRouter.Route nativeRoute = NativeSqlRouter.route(sql, registry.allProfiles());
     SqlQueryPlanner.DirectSql mysqlRoute = SqlQueryPlanner.directSql(sql, registry.mysqlSourceNames());
-    if (nativeRoute != null) return new Query(sourceConnection(nativeRoute.source()), nativeRoute.sql());
-    if (mysqlRoute != null) return new Query(sourceConnection(mysqlRoute.source()),
-        SqlQueryPlanner.executableSql(sql, registry.mysqlSourceNames()));
-    return new Query(openFederated(registry, sql, mode, cancelled, active), sql);
+    if (nativeRoute != null) { progress.accept("motor=nativo origem=" + nativeRoute.source()); return new Query(sourceConnection(nativeRoute.source()), nativeRoute.sql()); }
+    if (mysqlRoute != null) { progress.accept("motor=nativo origem=" + mysqlRoute.source()); return new Query(sourceConnection(mysqlRoute.source()),
+        SqlQueryPlanner.executableSql(sql, registry.mysqlSourceNames())); }
+    var settings = FederatedEngineSettings.effective();
+    progress.accept("motor=" + selectEngine(sql, mode, registry.mysqlSourceNames()) + " solicitado=" + mode + " memoria_mb=" + settings.memoryMb() + " threads=" + settings.threads());
+    return new Query(openFederated(registry, sql, mode, cancelled, active, progress), sql);
   }
 
   static Connection openFederated(SqlConnectionRegistry registry, String sql, String mode) throws SQLException {

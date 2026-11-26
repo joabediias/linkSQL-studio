@@ -43,6 +43,22 @@ public final class DuckDbWorkspaceRegressionTest {
     var shared = DuckDbFederatedExecutor.nullFilters(
         "SELECT C.ID FROM SRV_MATRIZ.CAD_CLI0 C LEFT JOIN SRV_MATRIZ.OUTRA D ON C.ID = D.ID WHERE C.ID IS NOT NULL UNION ALL SELECT ID FROM SRV_MATRIZ.CAD_CLI0", aliases);
     if (!shared.get(physical).isEmpty()) throw new AssertionError("Filtro indevido entre ocorrências");
+    var equality = DuckDbFederatedExecutor.integerFilters(
+        "SELECT C.ID FROM SRV_MATRIZ.CAD_CLI0 C WHERE C.FLAG = 1 UNION ALL SELECT D.ID FROM SRV_MATRIZ.CAD_CLI0 D WHERE 1 = D.FLAG AND D.ID = 2", aliases);
+    if (!java.util.Set.of("FLAG=1").equals(equality.get(physical)))
+      throw new AssertionError("Interseção de igualdade inteira incorreta");
+    var eqOuter = DuckDbFederatedExecutor.integerFilters(
+        "SELECT C.ID FROM SRV_MATRIZ.CAD_CLI0 C LEFT JOIN SRV_MATRIZ.OUTRA D ON C.ID = D.ID WHERE C.FLAG = 1 AND D.FLAG = 1", aliases);
+    if (!java.util.Set.of("FLAG=1").equals(eqOuter.get(physical)) || !eqOuter.get(other).isEmpty())
+      throw new AssertionError("Igualdade indevida no lado não preservado");
+    for (String predicate : java.util.List.of("FLAG = 1 OR ID = 2", "FLAG = '1'", "FLAG = 1.5", "FLAG = 2147483648")) {
+      var unsafe = DuckDbFederatedExecutor.integerFilters(
+          "SELECT ID FROM SRV_MATRIZ.CAD_CLI0 WHERE " + predicate, aliases);
+      if (!unsafe.get(physical).isEmpty()) throw new AssertionError("Filtro indevido: " + predicate);
+    }
+    var eqShared = DuckDbFederatedExecutor.integerFilters(
+        "SELECT ID FROM SRV_MATRIZ.CAD_CLI0 WHERE FLAG = 1 UNION ALL SELECT ID FROM SRV_MATRIZ.CAD_CLI0", aliases);
+    if (!eqShared.get(physical).isEmpty()) throw new AssertionError("Igualdade indevida em tabela compartilhada");
     var four = java.util.List.of("A","B","C","D");
     String federated = "SELECT ID FROM A.T UNION ALL SELECT ID FROM B.T UNION ALL SELECT ID FROM C.T UNION ALL SELECT ID FROM D.T";
     if (!"duckdb".equals(LinkSqlEmbeddedEngine.selectEngine(federated, "auto", four)))

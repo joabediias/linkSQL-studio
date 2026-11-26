@@ -195,6 +195,57 @@ final class DuckDbFederatedExecutor {
     return common;
   }
 
+  /** Redução de duplicatas para agregações insensíveis à multiplicidade.
+   * Só uma ocorrência física, SELECT simples, sem predicados ou modificadores.
+   * A agregação original continua no DuckDB.
+   */
+  static Set<Table> duplicateInsensitiveTables(String sql, Collection<String> aliases) throws SQLException {
+    Map<String,String> sources = new HashMap<>();
+    for (String alias : aliases) sources.put(alias.toUpperCase(Locale.ROOT), alias);
+    Map<Table,Integer> occurrences = new HashMap<>();
+    Set<Table> candidates = new HashSet<>();
+    try {
+      SqlNode root = SqlParser.create(sql, SqlParser.config().withLex(Lex.MYSQL)).parseQuery();
+      // Limitar a ramos diretos de UNION ALL, sem subconsultas correlacionadas.
+      List<SqlNode> branches = new ArrayList<>();
+      java.util.function.Consumer<SqlNode> flatten = new java.util.function.Consumer<>() {
+        public void accept(SqlNode node) {
+          if (node instanceof SqlCall c && c.getKind() == SqlKind.UNION
+              && c.getOperator() instanceof SqlSetOperator op && op.isAll())
+            for (SqlNode child : c.getOperandList()) accept(child);
+          else branches.add(node);
+        }
+      };
+      flatten.accept(root);
+      for (SqlNode node : branches) {
+        if (!(node instanceof SqlSelect select)) return Set.of();
+        SqlNode from = select.getFrom();
+        if (!(from instanceof SqlIdentifier id) || id.names.size()!=2) return Set.of();
+        String source = sources.get(id.names.get(0).toUpperCase(Locale.ROOT));
+        if (source == null) return Set.of();
+        Table table = new Table(source, id.names.get(1));
+        occurrences.merge(table, 1, Integer::sum);
+        if (select.getWhere()!=null || select.getGroup()!=null || select.getHaving()!=null
+            || select.getOrderList()!=null || select.getOffset()!=null || select.getFetch()!=null
+            || (select.getWindowList()!=null && !select.getWindowList().isEmpty())) continue;
+        boolean eligible = !select.getSelectList().isEmpty();
+        for (SqlNode item : select.getSelectList()) {
+          if (item instanceof SqlCall a && a.getKind()==SqlKind.AS) item=a.operand(0);
+          if (!(item instanceof SqlCall c)
+              || (c.getKind()!=SqlKind.MIN && c.getKind()!=SqlKind.MAX)
+              || c.operandCount()!=1 || !(c.operand(0) instanceof SqlIdentifier col)
+              || col.isStar() || col.names.size()!=1) { eligible=false; break; }
+        }
+        if (eligible) candidates.add(table);
+      }
+    } catch (Exception ex) { return Set.of(); }
+    candidates.removeIf(t -> occurrences.getOrDefault(t,0)!=1);
+    for (Table t : List.copyOf(candidates))
+      if (occurrences.keySet().stream().anyMatch(o -> !o.equals(t)
+          && o.source().equalsIgnoreCase(t.source()) && o.name().equalsIgnoreCase(t.name()))) candidates.remove(t);
+    return Set.copyOf(candidates);
+  }
+
   private static String mysqlIdentifier(String name) { return "`" + name.replace("`", "``") + "`"; }
 
   static String remoteSql(Statement st, Table table, Projection projection) throws SQLException {

@@ -109,6 +109,9 @@ final class DuckDbTableTransfer {
       String schema, String table, ResultSetMetaData meta, BooleanSupplier cancelled) throws SQLException {
     long count = 0;
     if (!target.getAutoCommit()) throw new SQLException("A transferência requer conexão local exclusiva.");
+    int width = meta.getColumnCount();
+    int[] types = new int[width];
+    for (int i = 0; i < width; i++) types[i] = meta.getColumnType(i + 1);
     target.setAutoCommit(false);
     try {
       boolean more = true;
@@ -119,16 +122,30 @@ final class DuckDbTableTransfer {
               throw new java.util.concurrent.CancellationException("Transferência cancelada");
             if (!source.next()) { more = false; break; }
             out.beginRow();
-            for (int i=1; i<=meta.getColumnCount(); i++) {
-              // Tipos não suportados pelo Appender são tratados pelo caminho JDBC.
-              String value = source.getString(i);
-              if (value == null) out.appendNull();
-              else switch (meta.getColumnType(i)) {
-                case Types.TINYINT, Types.SMALLINT, Types.INTEGER -> out.append(source.getInt(i));
-                case Types.BIGINT -> out.append(source.getLong(i));
-                case Types.FLOAT, Types.REAL, Types.DOUBLE -> out.append(source.getDouble(i));
-                case Types.BOOLEAN, Types.BIT -> out.append(source.getBoolean(i));
-                default -> out.append(value);
+            for (int i=1; i<=width; i++) {
+              // Evita conversão textual redundante nos tipos primitivos.
+              // wasNull() preserva NULL sem confundi-lo com zero ou false.
+              switch (types[i-1]) {
+                case Types.TINYINT, Types.SMALLINT, Types.INTEGER -> {
+                  int value = source.getInt(i);
+                  if (source.wasNull()) out.appendNull(); else out.append(value);
+                }
+                case Types.BIGINT -> {
+                  long value = source.getLong(i);
+                  if (source.wasNull()) out.appendNull(); else out.append(value);
+                }
+                case Types.FLOAT, Types.REAL, Types.DOUBLE -> {
+                  double value = source.getDouble(i);
+                  if (source.wasNull()) out.appendNull(); else out.append(value);
+                }
+                case Types.BOOLEAN, Types.BIT -> {
+                  boolean value = source.getBoolean(i);
+                  if (source.wasNull()) out.appendNull(); else out.append(value);
+                }
+                default -> {
+                  String value = source.getString(i);
+                  if (value == null) out.appendNull(); else out.append(value);
+                }
               }
             }
             out.endRow();

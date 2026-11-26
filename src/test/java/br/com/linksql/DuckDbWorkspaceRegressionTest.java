@@ -71,6 +71,36 @@ public final class DuckDbWorkspaceRegressionTest {
     var asciiOuter = DuckDbFederatedExecutor.asciiFilters(
         "SELECT C.ID FROM SRV_MATRIZ.CAD_CLI0 C LEFT JOIN SRV_MATRIZ.OUTRA D ON C.ID = D.ID WHERE D.FLAG = 'F'", aliases);
     if (!asciiOuter.get(other).isEmpty()) throw new AssertionError("Filtro textual indevido no LEFT JOIN");
+    var reduction = DuckDbFederatedExecutor.duplicateInsensitiveTables(
+        "SELECT MIN(ID), MAX(ID) FROM SRV_MATRIZ.CAD_CLI0 UNION ALL SELECT MIN(ID), MAX(ID) FROM SRV_MATRIZ.OUTRA", aliases);
+    if (!java.util.Set.of(physical, other).equals(reduction))
+      throw new AssertionError("Redução MIN/MAX elegível não identificada: " + reduction);
+    for (String query : java.util.List.of(
+        "SELECT COUNT(ID) FROM SRV_MATRIZ.CAD_CLI0",
+        "SELECT SUM(ID) FROM SRV_MATRIZ.CAD_CLI0",
+        "SELECT MIN(ID), COUNT(*) FROM SRV_MATRIZ.CAD_CLI0",
+        "SELECT MIN(ID) FROM SRV_MATRIZ.CAD_CLI0 WHERE ID > 0",
+        "SELECT MIN(ID) FROM SRV_MATRIZ.CAD_CLI0 UNION ALL SELECT MAX(ID) FROM SRV_MATRIZ.CAD_CLI0")) {
+      if (!DuckDbFederatedExecutor.duplicateInsensitiveTables(query, aliases).isEmpty())
+        throw new AssertionError("Redução indevida: " + query);
+    }
+    try (var db = DriverManager.getConnection("jdbc:duckdb:"); var st = db.createStatement()) {
+      st.execute("CREATE TABLE original (id INTEGER)");
+      st.execute("INSERT INTO original VALUES (NULL), (0), (0), (-5), (-5), (10), (10)");
+      for (String table : java.util.List.of("original", "(SELECT DISTINCT id FROM original)")) {
+        try (var rs = st.executeQuery("SELECT MIN(id), MAX(id) FROM " + table)) {
+          if (!rs.next() || rs.getInt(1)!=-5 || rs.getInt(2)!=10 || rs.next())
+            throw new AssertionError("Redução alterou extremos");
+        }
+      }
+      st.execute("DELETE FROM original");
+      for (String table : java.util.List.of("original", "(SELECT DISTINCT id FROM original)")) {
+        try (var rs = st.executeQuery("SELECT MIN(id), MAX(id) FROM " + table)) {
+          if (!rs.next() || rs.getObject(1)!=null || rs.getObject(2)!=null || rs.next())
+            throw new AssertionError("Redução alterou agregação vazia");
+        }
+      }
+    }
     var four = java.util.List.of("A","B","C","D");
     String federated = "SELECT ID FROM A.T UNION ALL SELECT ID FROM B.T UNION ALL SELECT ID FROM C.T UNION ALL SELECT ID FROM D.T";
     if (!"duckdb".equals(LinkSqlEmbeddedEngine.selectEngine(federated, "auto", four)))

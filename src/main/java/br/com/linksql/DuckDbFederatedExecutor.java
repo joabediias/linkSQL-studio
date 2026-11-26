@@ -246,6 +246,22 @@ final class DuckDbFederatedExecutor {
     return Set.copyOf(candidates);
   }
 
+  static boolean numericReductionEligible(Statement st, Table table, Projection projection) throws SQLException {
+    if (projection.all()) return false;
+    int count = 0;
+    try (ResultSet empty = st.executeQuery("SELECT * FROM " + mysqlIdentifier(table.name()) + " WHERE 1=0")) {
+      ResultSetMetaData meta = empty.getMetaData();
+      for (int i=1; i<=meta.getColumnCount(); i++) {
+        if (!projection.includes(meta.getColumnName(i))) continue;
+        count++;
+        int type = meta.getColumnType(i);
+        if (!meta.isSigned(i) || !(type == Types.TINYINT || type == Types.SMALLINT
+            || type == Types.INTEGER || type == Types.BIGINT)) return false;
+      }
+    }
+    return count > 0;
+  }
+
   private static String mysqlIdentifier(String name) { return "`" + name.replace("`", "``") + "`"; }
 
   static String remoteSql(Statement st, Table table, Projection projection) throws SQLException {
@@ -334,6 +350,7 @@ final class DuckDbFederatedExecutor {
     Map<Table, Set<String>> filters = nullFilters(sql, registry.mysqlSourceNames());
     Map<Table, Set<String>> integers = integerFilters(sql, registry.mysqlSourceNames());
     Map<Table, Set<String>> ascii = asciiFilters(sql, registry.mysqlSourceNames());
+    Set<Table> reductions = duplicateInsensitiveTables(sql, registry.mysqlSourceNames());
     DuckDbWorkspace workspace = DuckDbWorkspace.open(parent, memoryMb, threads);
     try {
       int ordinal = 0;
@@ -351,7 +368,12 @@ final class DuckDbFederatedExecutor {
           active.accept(st);
           if (cancelled.getAsBoolean()) throw new java.util.concurrent.CancellationException();
           long connected = System.nanoTime();
-          try (ResultSet rows = st.executeQuery(remoteSql(st, table, projection, filters.getOrDefault(table, Set.of()), integers.getOrDefault(table, Set.of()), ascii.getOrDefault(table, Set.of())))) {
+          String remoteQuery = remoteSql(st, table, projection, filters.getOrDefault(table, Set.of()), integers.getOrDefault(table, Set.of()), ascii.getOrDefault(table, Set.of()));
+          if (reductions.contains(table) && numericReductionEligible(st, table, projection)) {
+            remoteQuery = "SELECT DISTINCT " + remoteQuery.substring("SELECT ".length());
+            progress.accept("DuckDB: redução remota de duplicatas para MIN/MAX — " + table.source() + "." + table.name());
+          }
+          try (ResultSet rows = st.executeQuery(remoteQuery)) {
             long ready = System.nanoTime();
             long count = DuckDbTableTransfer.copy(rows, workspace.connection(), table.source(), table.name(), cancelled);
             String detail = String.format(java.util.Locale.ROOT,

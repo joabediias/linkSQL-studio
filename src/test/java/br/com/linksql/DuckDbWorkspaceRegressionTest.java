@@ -59,6 +59,18 @@ public final class DuckDbWorkspaceRegressionTest {
     var eqShared = DuckDbFederatedExecutor.integerFilters(
         "SELECT ID FROM SRV_MATRIZ.CAD_CLI0 WHERE FLAG = 1 UNION ALL SELECT ID FROM SRV_MATRIZ.CAD_CLI0", aliases);
     if (!eqShared.get(physical).isEmpty()) throw new AssertionError("Igualdade indevida em tabela compartilhada");
+    var ascii = DuckDbFederatedExecutor.asciiFilters(
+        "SELECT C.ID FROM SRV_MATRIZ.CAD_CLI0 C WHERE C.SQL_DELETED = 'F' UNION ALL SELECT D.ID FROM SRV_MATRIZ.CAD_CLI0 D WHERE 'F' = D.SQL_DELETED", aliases);
+    if (!java.util.Set.of("SQL_DELETED=F").equals(ascii.get(physical)))
+      throw new AssertionError("Filtro textual comum incorreto");
+    for (String predicate : java.util.List.of("FLAG = 'F' OR ID = 2", "FLAG = 'a b'", "FLAG = 'é'", "FLAG = 1")) {
+      var unsafe = DuckDbFederatedExecutor.asciiFilters(
+          "SELECT ID FROM SRV_MATRIZ.CAD_CLI0 WHERE " + predicate, aliases);
+      if (!unsafe.get(physical).isEmpty()) throw new AssertionError("Filtro textual indevido: " + predicate);
+    }
+    var asciiOuter = DuckDbFederatedExecutor.asciiFilters(
+        "SELECT C.ID FROM SRV_MATRIZ.CAD_CLI0 C LEFT JOIN SRV_MATRIZ.OUTRA D ON C.ID = D.ID WHERE D.FLAG = 'F'", aliases);
+    if (!asciiOuter.get(other).isEmpty()) throw new AssertionError("Filtro textual indevido no LEFT JOIN");
     var four = java.util.List.of("A","B","C","D");
     String federated = "SELECT ID FROM A.T UNION ALL SELECT ID FROM B.T UNION ALL SELECT ID FROM C.T UNION ALL SELECT ID FROM D.T";
     if (!"duckdb".equals(LinkSqlEmbeddedEngine.selectEngine(federated, "auto", four)))

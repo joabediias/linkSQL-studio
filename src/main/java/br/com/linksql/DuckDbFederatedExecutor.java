@@ -225,18 +225,19 @@ final class DuckDbFederatedExecutor {
         if (source == null) return Set.of();
         Table table = new Table(source, id.names.get(1));
         occurrences.merge(table, 1, Integer::sum);
-        if (select.getWhere()!=null || select.getGroup()!=null || select.getHaving()!=null
-            || select.getOrderList()!=null || select.getOffset()!=null || select.getFetch()!=null
-            || (select.getWindowList()!=null && !select.getWindowList().isEmpty())) continue;
+        if (select.getWhere()!=null || (select.getGroup()!=null && !select.getGroup().isEmpty()) || select.getHaving()!=null
+            || (select.getOrderList()!=null && !select.getOrderList().isEmpty()) || select.getOffset()!=null || select.getFetch()!=null
+            || (select.getWindowList()!=null && !select.getWindowList().isEmpty())) return Set.of();
         boolean eligible = !select.getSelectList().isEmpty();
         for (SqlNode item : select.getSelectList()) {
           if (item instanceof SqlCall a && a.getKind()==SqlKind.AS) item=a.operand(0);
           if (!(item instanceof SqlCall c)
-              || (c.getKind()!=SqlKind.MIN && c.getKind()!=SqlKind.MAX)
+              || (!c.getOperator().getName().equalsIgnoreCase("MIN") && !c.getOperator().getName().equalsIgnoreCase("MAX"))
               || c.operandCount()!=1 || !(c.operand(0) instanceof SqlIdentifier col)
               || col.isStar() || col.names.size()!=1) { eligible=false; break; }
         }
-        if (eligible) candidates.add(table);
+        if (!eligible) return Set.of();
+        candidates.add(table);
       }
     } catch (Exception ex) { return Set.of(); }
     candidates.removeIf(t -> occurrences.getOrDefault(t,0)!=1);
